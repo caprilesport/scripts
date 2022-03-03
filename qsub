@@ -1,0 +1,51 @@
+#!/usr/bin/bash
+
+# Script for submitting jobs at the supercomputers I use.
+
+# use with:  qsub jupiter job.inp   #submit @ jupiter
+#            qsub newton   job.inp   #submit @ newton
+
+# Change your working directory here
+local=/home/vinicp/Chem/doutorado/projects/
+
+# check what is cluster to submit job (first argument) and set remote and local directories
+if [[ "$1" == "newton" ]] ; then
+  cluster="newton"
+  remote=/mnt/data/vport/projects/
+  filename=$2
+  file="${filename%%.*}"
+  job="qsub $file.job"
+
+  # if the cluster is newton first generate the .job file to be submited
+  qprep_newton $filename 16
+
+elif [[ "$1" == "jupiter" ]] ; then
+  cluster="jupiter"
+  remote=/home/vport/projects/
+  job="job $2 1 8"
+
+else
+  echo "ERROR: First argument must be 'newton' or 'jupiter'"
+  exit
+fi
+
+current_dir=`pwd`'/'
+
+len_local=${#local}
+len_current=${#current_dir}
+target=$remote${current_dir:$len_local:$len_current}
+
+# set the correct folder
+current_remote=$target
+
+
+# push all files of current folder to remote and submit job
+csync $cluster push 
+
+ssh $cluster "
+cd $current_remote
+echo "Submitting file $i at $cluster:$current_remote"
+$job
+"
+
+

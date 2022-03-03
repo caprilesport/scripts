@@ -1,0 +1,93 @@
+#!/usr/bin/bash
+
+# Script for syncing my project folders with the ones on the remote server we work on.
+
+# use with:  clustersync push/pull         to copy files
+#            clustersync push/pull sync    to synchronize (be careful not to lose anything)
+#            clustersync push/pull check   to check differences
+
+# This is heavily inspired in the following script by Prof. Dr. Leandro Martinez (https://github.com/lmiq/tips/blob/master/GoogleDrive/gdrive)
+# You can also create a file .remoteignore (such as a .gitignore file) to exclude any file from syncing
+
+# Change your local and remote working directories here.
+
+local=/home/vinicp/Chem/doutorado/projects/
+
+if [[ "$1" == "newton" ]] ; then
+  remote=newton:/mnt/data/vport/projects/
+elif [[ "$1" == "jupiter" ]] ; then
+  remote=jupiter:/home/vport/projects/
+elif [[ "$1" == "adf" ]] ; then
+  remote=adf:/home/geem/vport/projects/
+else
+  echo "ERROR: First argument must be 'newton' or 'jupiter'"
+  exit
+fi
+
+current_dir=`pwd`'/'
+echo "Current directory: $current_dir"
+
+# check if current folder is a subfolder of the local directory defined above:
+
+if [[ "$current_dir" == "$local"* ]] ; then
+
+  echo "Current dir is a $remote subfolder"
+  
+  len_local=${#local}
+  len_current=${#current_dir}
+  target=$remote${current_dir:$len_local:$len_current}
+  
+  # set the correct folders
+  current_local=$current_dir
+  current_remote=$target"/"
+
+else 
+
+  echo "Current dir is NOT a $remote subfolder. Quitting."
+  exit
+
+fi
+
+ignore_files=`find .remoteignore 2>/dev/null`
+
+# check for files to ignore
+
+if [[ $ignore_files ]]; then
+  echo '.remoteignore found, ignoring the files listed'
+  ignore_fullpath=`pwd`/.remoteignore
+  ignore_flag="--exclude-from $ignore_fullpath" 
+else
+  echo 'No .remoteignore file found.' 
+  ignore_flag=""
+fi
+
+
+# Push, pull
+
+if [[ "$2" == "push" ]] ; then
+  source="$current_local"
+  destination="$current_remote"
+elif [[ "$2" == "pull" ]] ; then
+  source="$current_remote"
+  destination="$current_local"
+else
+  echo "ERROR: Second argument must be 'push', 'pull'"
+  exit
+fi
+
+# Sync, check
+
+last_flag=""
+
+if [[ "$3" == "sync" ]] ; then
+  last_flag=--delete
+elif [[ "$3" == "check" ]] ; then
+  last_flag=--dry-run
+elif [[ "$3" > " " ]] ; then
+  echo "ERROR: Third argument, if any, must be 'sync', 'check'"
+  exit
+fi
+
+rsync -rtvuc $ignore_flag $last_flag $source $destination 
+
+

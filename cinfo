@@ -1,0 +1,119 @@
+#!/usr/bin/bash
+
+# this script goes in each node of our cluster and prints out some information regarding each node
+# TODO (vinicius): add more info, for example free space for storage and related.
+# TODO (vinicius): leave this as a sysadmin file in the lab github
+# TODO (vinicius): use awk to better format output (maybe in tables?)
+# debug nodeinfo
+
+nodes=( "elara" "leda" "euante" "amalteia" "himalia" "carme" "helique" "cilene" "ortosia" "euporia" "io" "harpalique" "iocasta" "ganimedes" "tebe" "praxidique" "arque" "lisiteia" "metis" "adrasteia" "carpo" )
+
+help="false"
+temperature="false"
+memory="false"
+nodeinformation="false"
+
+ARGS=$(getopt -a --options ht:m:n: --long "help,temperature:,memory:,nodeinfo:" -- "$@")
+eval set -- "$ARGS"
+
+while true; do
+  case "$1" in
+    -h|--help)
+      help="true"
+      shift;;
+    -t|--temperature)
+      temperature="true"
+      machine+=("$OPTARG")
+      # machine="$2"
+      shift 2;;
+    -m|--memory)
+      memory="true"
+      machine="$2"
+      shift 2;;
+    -n|--nodes)
+      nodeinformation="true"
+      info="$2"
+      shift 2;;
+    --)
+      break;;
+     *)
+      printf "Unknown option %s\n" "$1"
+      exit 1;;
+  esac
+done
+
+Help()
+{
+   # Display Help
+   echo "Display information on the state of the cluster "
+   echo
+   echo "Syntax: cinfo [-h|t|m|n]"
+   echo "options:"
+   echo "-h/--help              Print this Help and exit."
+   echo "-t/--temperature       Print temperature on all nodes."
+   echo "-m/--memory            Print the total memory on all nodes."
+   echo "-n/--nodeinfo \$arg    Print information about the nodes, requires one positional argument:"
+   echo "   job"
+   echo "   free"
+   echo "   down"
+   echo "   state"
+}
+
+Temperature()
+{
+  if [[ $machine == "all" ]]; then
+    # Displays the temperature of selected nodes
+    for i in "${nodes[@]}"; 
+    do 
+        echo "Temperature check for $i" 
+        # ssh $i "sensors | grep Core 2>/dev/null" 
+    done 
+  else
+    echo $machine
+    for i in "${machine[@]}"; do
+      echo "Temperature check for $i" 
+    # ssh $machine "sensors | grep Core 2>/dev/null" 
+    done
+  fi
+}
+
+Memory()
+{
+  if [[ $machine == "all" ]]; then
+    # Displays the total memory of all nodes
+    for i in "${nodes[@]}"; 
+    do 
+        echo "Total memory for $machine" 
+        ssh $i "grep MemTotal /proc/meminfo 2>/dev/null" 
+    done 
+  else 
+    echo "Total memory for $machine"
+    ssh $machine "grep MemTotal /proc/meminfo 2>/dev/null"  
+  fi
+
+}
+
+Nodeinfo()
+{
+    # Displays the nodeinfo required
+    pbsnodes -a | grep -B4 state\ \=\ $info
+}
+
+if [ $help == "true" ]; then
+    Help
+    exit
+fi
+
+if [ $temperature == "true" ]; then
+    Temperature
+fi
+
+if [ $memory == "true" ]; then
+    Memory
+fi
+
+if [ $nodeinformation == "true" ]; then
+    Nodeinfo
+fi
+
+exit

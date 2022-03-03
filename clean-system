@@ -1,0 +1,15 @@
+#!/bin/bash
+
+echo "cleaning system..."
+
+#clean apt cache 
+sudo apt autoremove 
+sudo apt clean
+
+# remove old systemctl journals
+sudo journalctl --vacuum-time=3d
+
+# remove thumbnail cache
+sudo rm -rf ~/.cache/thumbnails/*
+
+
