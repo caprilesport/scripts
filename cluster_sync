@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+
+# Script for syncing my project folders with the ones on the cluster
+
+
+
+
+# Push, pull
+
+if [[ "$1" == "push" ]] ; then
+  type="copy"
+  source="$current_local"
+  destination="$current_remote"
+elif [[ "$1" == "pull" ]] ; then
+  type="copy"
+  source="$current_remote"
+  destination="$current_local"
+else
+  echo "ERROR: First argument must be 'push', 'pull'"
+  exit
+fi
+
+# Sync, check
+
+if [[ "$2" == "sync" ]] ; then
+  type="sync"
+elif [[ "$2" == "check" ]] ; then
+  type="check"
+elif [[ "$2" > " " ]] ; then
+  echo "ERROR: Second argument, if any, must be 'sync', 'check'"
+  exit
+fi
+
