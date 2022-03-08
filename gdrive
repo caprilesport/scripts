@@ -5,8 +5,8 @@
 #            gdrive push/pull check   to check differences
 #
 
-local=/home/vinizera
-remote=Drive:/
+local=/home/vinicp/
+remote=drive:/
 
 #
 # The script will sync either the current folder or all drive.
