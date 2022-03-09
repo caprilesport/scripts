@@ -1,0 +1,85 @@
+#!/usr/bin/bash
+
+# Script for syncing my project folders with the ones on the cluster
+
+# This is heavily inspired in the following script by Prof. Dr. Leandro Martinez (https://github.com/lmiq/tips/blob/master/GoogleDrive/gdrive)
+
+# IMPORTANT:
+# If you dont want to tupe your password every time, you need to have jupiter (or any remote location) already set up in your ssh config see: https://phoenixnap.com/kb/setup-passwordless-ssh
+
+# It is also advised to have a config file so you can use the name of the remote host instead of user@IP, see:https://linuxize.com/post/using-the-ssh-config-file/
+
+# You can also create a file .clusterignore (such as a .gitignore file) to exclude any file from syncing
+
+# Change your working directories here, i suggest that you create a folder in jupiter with the same name as the local folder to be synced.
+
+local=/home/vinizera/Chem/doutorado/projects/
+remote=jupiter:/home/vport/projects/
+
+current_dir=`pwd`'/'
+echo "Current directory: $current_dir"
+
+# check if current folder is a subfolder of the local directory defined above:
+
+if [[ "$current_dir" == "$local"* ]] ; then
+
+  echo "Current dir is a $remote subfolder"
+  
+  len_local=${#local}
+  len_current=${#current_dir}
+  target=$remote${current_dir:$len_local:$len_current}
+  
+  # set the correct folders
+  current_local=$current_dir
+  current_remote=$target
+
+else 
+
+  echo "Current dir is NOT a $remote subfolder. Quitting."
+  exit
+
+fi
+
+ignore_files=`find .clusterignore 2>/dev/null`
+
+# check for files to ignore
+
+if [[ $ignore_files ]]; then
+  echo '.clusterignore found, ignoring the files listed'
+  ignore_fullpath=`pwd`/.clusterignore
+  ignore_flag="--exclude-from $ignore_fullpath" 
+else
+  echo 'No .clusterignore file found.' 
+  ignore_flag=""
+fi
+
+
+# Push, pull
+
+if [[ "$1" == "push" ]] ; then
+  source="$current_local"
+  destination="$current_remote"
+elif [[ "$1" == "pull" ]] ; then
+  source="$current_remote"
+  destination="$current_local"
+else
+  echo "ERROR: First argument must be 'push', 'pull'"
+  exit
+fi
+
+# Sync, check
+
+last_flag=""
+
+if [[ "$2" == "sync" ]] ; then
+  last_flag=--delete
+elif [[ "$2" == "check" ]] ; then
+  last_flag=--dry-run
+elif [[ "$2" > " " ]] ; then
+  echo "ERROR: Second argument, if any, must be 'sync', 'check'"
+  exit
+fi
+
+rsync -rtvuc $ignore_flag $last_flag $source $destination 
+
+
