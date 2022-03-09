@@ -1,5 +1,10 @@
 #!/usr/bin/bash
 
+# use with:  clustersync push/pull         to copy files
+#            clustersync push/pull sync    to synchronize (be careful not to lose anything)
+#            clustersync push/pull check   to check differences
+#
+
 # Script for syncing my project folders with the ones on the cluster
 
 # This is heavily inspired in the following script by Prof. Dr. Leandro Martinez (https://github.com/lmiq/tips/blob/master/GoogleDrive/gdrive)
