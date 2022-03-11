@@ -20,11 +20,6 @@
 
 # An example configuration of jupiter would work like this (in ~/.ssh/config) in my case:
 
-# Host jupiter
-#     HostName 150.162.31.2
-#     User vport
-#     Port 2222
-
 # Also, if you dont want to type your password every time, you need to have jupiter (or any remote location) already set up in your ssh config see: https://phoenixnap.com/kb/setup-passwordless-ssh
 
 # You can also create a file .clusterignore (such as a .gitignore file) to exclude any file from syncing
