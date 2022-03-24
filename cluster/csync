@@ -8,7 +8,7 @@
 
 # This is heavily inspired in the following script by Prof. Dr. Leandro Martinez (https://github.com/lmiq/tips/blob/master/GoogleDrive/gdrive)
 
-# You can also create a file .clusterignore (such as a .gitignore file) to exclude any file from syncing
+# You can also create a file .remoteignore (such as a .gitignore file) to exclude any file from syncing
 
 # Change your working directories here, I suggest that you create a folder in your remote server with the same name as the local folder to be synced.
 
@@ -39,16 +39,16 @@ else
 
 fi
 
-ignore_files=`find .clusterignore 2>/dev/null`
+ignore_files=`find .remoteignore 2>/dev/null`
 
 # check for files to ignore
 
 if [[ $ignore_files ]]; then
-  echo '.clusterignore found, ignoring the files listed'
-  ignore_fullpath=`pwd`/.clusterignore
+  echo '.remoteignore found, ignoring the files listed'
+  ignore_fullpath=`pwd`/.remoteignore
   ignore_flag="--exclude-from $ignore_fullpath" 
 else
-  echo 'No .clusterignore file found.' 
+  echo 'No .remoteignore file found.' 
   ignore_flag=""
 fi
 
