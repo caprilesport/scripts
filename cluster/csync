@@ -1,32 +1,18 @@
 #!/usr/bin/bash
 
+# Script for syncing my project folders with the ones on the remote server we work on.
+
 # use with:  clustersync push/pull         to copy files
 #            clustersync push/pull sync    to synchronize (be careful not to lose anything)
 #            clustersync push/pull check   to check differences
-#
-
-# Script for syncing my project folders with the ones on the cluster
 
 # This is heavily inspired in the following script by Prof. Dr. Leandro Martinez (https://github.com/lmiq/tips/blob/master/GoogleDrive/gdrive)
 
-#  _____ __  __ _____   ____  _____ _______       _   _ _______ 
-# |_   _|  \/  |  __ \ / __ \|  __ \__   __|/\   | \ | |__   __|
-#   | | | \  / | |__) | |  | | |__) | | |  /  \  |  \| |  | |   
-#   | | | |\/| |  ___/| |  | |  _  /  | | / /\ \ | . ` |  | |   
-#  _| |_| |  | | |    | |__| | | \ \  | |/ ____ \| |\  |  | |   
-# |_____|_|  |_|_|     \____/|_|  \_\ |_/_/    \_\_| \_|  |_|   
-                                                               
-# To use this script you need to have a config file (~/.ssh/config) so you can use the name of the remote host instead of user@IP, see:https://linuxize.com/post/using-the-ssh-config-file/
-
-# An example configuration of jupiter would work like this (in ~/.ssh/config) in my case:
-
-# Also, if you dont want to type your password every time, you need to have jupiter (or any remote location) already set up in your ssh config see: https://phoenixnap.com/kb/setup-passwordless-ssh
-
 # You can also create a file .clusterignore (such as a .gitignore file) to exclude any file from syncing
 
-# Change your working directories here, i suggest that you create a folder in jupiter with the same name as the local folder to be synced.
+# Change your working directories here, I suggest that you create a folder in your remote server with the same name as the local folder to be synced.
 
-local=/home/vinizera/Chem/doutorado/projects/
+local=/home/vinicp/Chem/doutorado/projects/
 remote=jupiter:/home/vport/projects/
 
 current_dir=`pwd`'/'

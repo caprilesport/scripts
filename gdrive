@@ -6,7 +6,7 @@
 #
 
 local=/home/vinicp/
-remote=drive:/
+remote=Drive:/
 
 #
 # The script will sync either the current folder or all drive.
