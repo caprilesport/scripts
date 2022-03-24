@@ -13,8 +13,6 @@ remote=Drive:/
 # If the current folder is a subfolder of the drive, the current
 # folder will be sync. Otherwise, the complete drive will be sync.
 #
-
-#
 # Default flags
 #
 

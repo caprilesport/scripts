@@ -2,8 +2,17 @@
 
 This folder holds some of the scripts I wrote using our cluster in @geem-lab. 
 
+If you want to use any of them just download/clone the repository and put the scripts in your $PATH.
+
 ## cinfo
 
+Prints some information about the cluster, for now we have available:
+
+Temperature: ```cinfo -t```
+Memory: ```cinfo -m```
+Node information: ```cinfo -n job/free/busy```
+
+For more help just do ```cinfo -h```
 
 ## csync
 
@@ -17,9 +26,9 @@ Use it as follows:
 
 ```console
   
-clustersync push/pull         #to copy files
-clustersync push/pull sync    #to synchronize (be careful not to lose anything)
-clustersync push/pull check   #to check differences
+csync push/pull         #to copy files
+csync push/pull sync    #to synchronize (be careful not to lose anything)
+csync push/pull check   #to check differences
     
 ```
 
