@@ -9,7 +9,9 @@ If you want to use any of them just download/clone the repository and put the sc
 Prints some information about the cluster, for now we have available:
 
 Temperature: ```cinfo -t```
+
 Memory: ```cinfo -m```
+
 Node information: ```cinfo -n job/free/busy```
 
 For more help just do ```cinfo -h```

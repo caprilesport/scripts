@@ -13,7 +13,7 @@ temperature="false"
 memory="false"
 nodeinformation="false"
 
-ARGS=$(getopt -a --options htmn: --long "help,temperature,memory,nodeinfo:" -- "$@")
+ARGS=$(getopt -a --options ht:m:n: --long "help,temperature:,memory:,nodeinfo:" -- "$@")
 eval set -- "$ARGS"
 
 while true; do
@@ -23,13 +23,15 @@ while true; do
       shift;;
     -t|--temperature)
       temperature="true"
-      shift;;
+      machine="$2"
+      shift 2;;
     -m|--memory)
       memory="true"
-      shift;;
+      machine="$2"
+      shift 2;;
     -n|--nodes)
       nodeinformation="true"
-      info="$2"
+      machine="$2"
       shift 2;;
     --)
       break;;
@@ -58,22 +60,33 @@ Help()
 
 Temperature()
 {
-    # Display temperature on all nodes
+  if [[ $machine == "all" ]]; then
+    # Displays the total memory of all nodes
     for i in "${nodes[@]}"; 
     do 
         echo "Temperature check for $i" 
         ssh $i "sensors | grep Core 2>/dev/null" 
     done 
+  else 
+    echo "Temperature check for $machine" 
+    ssh $machine "sensors | grep Core 2>/dev/null" 
+  fi
 }
 
 Memory()
 {
+  if [[ $machine == "all" ]]; then
     # Displays the total memory of all nodes
     for i in "${nodes[@]}"; 
     do 
         echo "Total memory for $i" 
         ssh $i "grep MemTotal /proc/meminfo 2>/dev/null" 
     done 
+  else 
+    echo "Total memory for $machine"
+    ssh $machine "grep MemTotal /proc/meminfo 2>/dev/null"  
+  fi
+
 }
 
 Nodeinfo()
