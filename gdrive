@@ -6,14 +6,12 @@
 #
 
 local=/home/vinicp/
-remote=drive:/
+remote=Drive:/
 
 #
 # The script will sync either the current folder or all drive.
 # If the current folder is a subfolder of the drive, the current
 # folder will be sync. Otherwise, the complete drive will be sync.
-#
-
 #
 # Default flags
 #
