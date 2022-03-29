@@ -1,0 +1,46 @@
+#!/usr/bin/bash
+
+# Change your working directories here, I suggest that you create a folder in your remote server with the same name as the local folder to be synced.
+
+local=/home/vinicp/Chem/doutorado/projects/
+remote=/home/vport/projects/
+
+current_dir=`pwd`'/'
+echo "Current directory: $current_dir"
+
+# check if current folder is a subfolder of the local directory defined above:
+
+if [[ "$current_dir" == "$local"* ]] ; then
+
+  echo "Current dir is a $remote subfolder"
+  
+  len_local=${#local}
+  len_current=${#current_dir}
+  target=$remote${current_dir:$len_local:$len_current}
+  
+  # set the correct folders
+  current_local=$current_dir
+  current_remote=$target
+
+else 
+
+  echo "Current dir is NOT a $remote subfolder. Quitting."
+  exit
+
+fi
+
+
+# push all files of current folder (for now i just work on "terminal" folders, so i should be fine with it, but should think of
+# a better opion somedayj)
+csync push 
+
+for i in "$@"
+do
+    ssh jupiter "
+    cd $current_remote
+    echo "Submitting file $i at jupiter:$current_remote"
+    job $i 1 8
+    "
+
+done 
+

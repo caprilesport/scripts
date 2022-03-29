@@ -31,7 +31,7 @@ while true; do
       shift 2;;
     -n|--nodes)
       nodeinformation="true"
-      machine="$2"
+      info="$2"
       shift 2;;
     --)
       break;;
