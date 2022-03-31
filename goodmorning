@@ -17,6 +17,9 @@ done
 # sync taskwarrior 
 task sync
 
+# print a quick log with the summary of the syncs
+
+
 # fire up firefox with news
 firefox g1.globo.com
 

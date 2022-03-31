@@ -4,9 +4,6 @@
 # It also checks for running jobs in both the local machine and remote clusters
 # if nothing of the local machine is required (no jobs running) it shuts down
 
-
-
-
 # back up in google drive
 folders=("/home/vinicp/Chem" "/home/vinicp/Documents" "/home/vinicp/physics")
 
@@ -19,6 +16,19 @@ done
 # sync taskwarrior 
 task sync 
 
-# check for jobs that have ended or not and update status 
+# for every git repositary, check if it has files not staged/commited
 
-# shutdown now 
+# no added files
+git diff --exit-code
+
+# no committed files 
+git diff --cached --exit-code
+
+# no untracked files (do i need this?)
+
+# commited but not pushed 
+
+# print the log file 
+
+
+# check for jobs that have ended or not and update status 
