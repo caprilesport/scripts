@@ -1,0 +1,24 @@
+#!/usr/bin/bash
+
+# This script is used at the end of work, it syncs all work with google drive  
+# It also checks for running jobs in both the local machine and remote clusters
+# if nothing of the local machine is required (no jobs running) it shuts down
+
+
+
+
+# back up in google drive
+folders=("/home/vinicp/Chem" "/home/vinicp/Documents" "/home/vinicp/physics")
+
+for i in "${folders[@]}"
+do 
+    cd $i 
+    gdrive push 
+done 
+
+# sync taskwarrior 
+task sync 
+
+# check for jobs that have ended or not and update status 
+
+# shutdown now 

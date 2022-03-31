@@ -3,19 +3,20 @@
 # This script is used at startup, it syncs up with google drive and opens the news on firefox
 
 # sync with back up in google drive
-folders=("/home/vinicp/Chem" "/home/vinicp/Documents" "/home/vinicp/physics")
+folders=("/home/vinicp/Chem" "/home/vinicp/Documents" "/home/vinicp/physics" "/home/vinicip/pictures")
 
 for i in "${folders[@]}"
 do 
-cd $i 
-gdrive pull 
-
+    cd $i 
+    gdrive pull 
 done 
 
 # check cluster for completed jobs
 
 
+# sync taskwarrior 
+task sync
 
 # fire up firefox with news
-
+firefox g1.globo.com
 
