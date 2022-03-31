@@ -5,30 +5,47 @@
 # if nothing of the local machine is required (no jobs running) it shuts down
 
 # back up in google drive
-folders=("/home/vinicp/Chem" "/home/vinicp/Documents" "/home/vinicp/physics")
+gdrivefolders=("/home/vinicp/Chem" "/home/vinicp/Documents" "/home/vinicp/physics" )
+gitfolders=("/home/vinicp/Repos/chemgui" "/home/vinicp/Repos/chemgui-openbabel" "/home/vinicp/Chem/datasets" "/home/vinicp/Chem/janus-crown" "/home/vinicp/Chem/perichromic-probes" )
 
-for i in "${folders[@]}"
+# create log files
+touch tmp.log
+touch tmp.gdrive.log
+
+# sync google drive
+for i in "${gdrivefolders[@]}"
 do 
     cd $i 
-    gdrive push 
+    gdrive push >> tmp.gdrive.log
 done 
 
 # sync taskwarrior 
-task sync 
+task sync >> tmp.log
 
 # for every git repositary, check if it has files not staged/commited
+# sync google drive
+for j in "${gitfolders[@]}"
+do 
+    echo "\nChecking $j" >> tmp.log
+    cd $j 
+    # no added files
+    git diff --exit-code >> tmp.log
 
-# no added files
-git diff --exit-code
+    # no committed files 
+    git diff --cached --exit-code >> tmp.log
 
-# no committed files 
-git diff --cached --exit-code
+    # commited but not pushed 
 
-# no untracked files (do i need this?)
-
-# commited but not pushed 
-
-# print the log file 
+    # no untracked files (do i need this?)
+done 
 
 
 # check for jobs that have ended or not and update status 
+
+# print the log file 
+cat tmp.gdrive.log | grep INFO >> tmp.log 
+cat tmp.log 
+
+rm tmp.log tmp.gdrive.log
+
+
