@@ -2,24 +2,51 @@
 
 # This script is used at startup, it syncs up with google drive and opens the news on firefox
 
+# logs
+touch $HOME/tmp.log
+touch $HOME/tmp.gdrive.log
+
+# create vars
+folders=("$HOME/Chem" "$HOME/Documents" "$HOME/physics" "$HOME/Pictures") #choose whitch folders to sync
+
 # sync with back up in google drive
-folders=("/home/vinicp/Chem" "/home/vinicp/Documents" "/home/vinicp/physics" "/home/vinicip/pictures")
+echo "====================================" >> $HOME/tmp.log 
+echo "            Goodmorning :)" >> $HOME/tmp.log 
+echo "====================================" >> $HOME/tmp.log 
+echo  >> $HOME/tmp.log 
+echo "        Synchronizing gdrive..." >> $HOME/tmp.log 
+
 
 for i in "${folders[@]}"
 do 
     cd $i 
-    gdrive pull 
+    gdrive pull > $HOME/tmp.gdrive.log 2>&1 
+    echo "Checking folder $i " >> $HOME/tmp.log       
+    echo "New files pulled:" >> $HOME/tmp.log       
+    cat $HOME/tmp.gdrive.log| grep "new" | awk '{print $5 $6}' >> $HOME/tmp.log       
+    echo "Files replaced:" >> $HOME/tmp.log       
+    cat $HOME/tmp.gdrive.log| grep "replaced existing" | awk '{print $5 $6 $7 $8 $9}' >> $HOME/tmp.log       
+    echo  >> $HOME/tmp.log       
 done 
 
-# check cluster for completed jobs
+echo "====================================" >> $HOME/tmp.log  
 
+# check cluster for completed jobs
+echo "     Checking for completed jobs" >> $HOME/tmp.log
+
+echo "====================================" >> $HOME/tmp.log  
 
 # sync taskwarrior 
-task sync
+echo "   Taskwarrior synchronization: " >> $HOME/tmp.log 
+task sync >> $HOME/tmp.log 2>&1 
+echo "====================================" >> $HOME/tmp.log 
+
 
 # print a quick log with the summary of the syncs
+cat $HOME/tmp.log
 
+rm $HOME/tmp.log $HOME/tmp.gdrive.log
 
-# fire up firefox with news
-firefox g1.globo.com
+# fire up firefox with news and e-mails
+firefox g1.globo.com mail.google.com webmail.ufsc.br
 
