@@ -7,13 +7,14 @@ touch $HOME/tmp.log
 touch $HOME/tmp.gdrive.log
 
 # create vars
-folders=("$HOME/Chem" "$HOME/Documents" "$HOME/physics" "$HOME/Pictures") #choose whitch folders to sync
+folders=("$HOME/Chem" "$HOME/Documents" "$HOME/physics")
 
 # sync with back up in google drive
 echo "====================================" >> $HOME/tmp.log 
 echo "            Goodmorning :)" >> $HOME/tmp.log 
 echo "====================================" >> $HOME/tmp.log 
 echo  >> $HOME/tmp.log 
+echo "Syncing gdrive"
 echo "        Synchronizing gdrive..." >> $HOME/tmp.log 
 
 
