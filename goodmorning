@@ -48,6 +48,3 @@ cat $HOME/tmp.log
 
 rm $HOME/tmp.log $HOME/tmp.gdrive.log
 
-# fire up firefox with news and e-mails
-firefox g1.globo.com mail.google.com webmail.ufsc.br
-
