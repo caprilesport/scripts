@@ -30,7 +30,7 @@ if [[ "$current_dir" == "$local"* ]] ; then
   
   # set the correct folders
   current_local=$current_dir
-  current_remote=$target
+  current_remote=$target"/"
 
 else 
 
