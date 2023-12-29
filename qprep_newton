@@ -19,21 +19,22 @@ cpu="$1"
 shift
 
 #script PBS
-echo "#!/bin/bash" > $job_file
-echo "#PBS -S /bin/bash" >> $job_file
-echo "#PBS -l nodes=1:ppn=$cpu" >> $job_file
-echo "#PBS -l mem=120GB" >> $job_file
-echo "#PBS -N $job" >> $job_file
-echo "#PBS -j oe" >> $job_file
-echo "#PBS -V" >> $job_file
-echo "export OMP_NUM_THREADS=$cpu" >> $job_file
-echo 'LOCAL=$(mktemp -d -p /mnt/scratch)' >> $job_file
-echo 'cat $''PBS_NODEFILE > ''$PBS_O_WORKDIR/.jobinfo' >> $job_file
-echo 'echo "$''LOCAL" >> $PBS_O_WORKDIR/.jobinfo' >> $job_file
-echo 'cp -f $''PBS_O_WORKDIR/*.{xyz,inp,gbw,opt,pot,hess} $LOCAL >& /dev/null' >> $job_file
-echo 'cd $''LOCAL' >> $job_file
-echo "/opt/local/orca-5.0.2/orca $input "'>& $'"PBS_O_WORKDIR/$job.out" >> $job_file
-echo 'cp -f $''(ls | grep -v ".inp\|.tmp") $PBS_O_WORKDIR' >> $job_file
-echo 'cd $''PBS_O_WORKDIR' >> $job_file
-echo 'rm -rf $''LOCAL' >> $job_file
-
+{
+  echo "#!/bin/bash" ;
+  echo "#PBS -S /bin/bash" ;
+  echo "#PBS -l nodes=1:ppn=$cpu" ;
+  echo "#PBS -l mem=120GB" ;
+  echo "#PBS -N $job" ;
+  echo "#PBS -j oe" ;
+  echo "#PBS -V" ;
+  echo "export OMP_NUM_THREADS=$cpu" ;
+  echo 'LOCAL=$(mktemp -d -p /mnt/scratch)' ;
+  echo 'cat $''PBS_NODEFILE > ''$PBS_O_WORKDIR/.jobinfo' ;
+  echo 'echo "$''LOCAL" >> $PBS_O_WORKDIR/.jobinfo' ;
+  echo 'cp -f $''PBS_O_WORKDIR/*.{xyz,inp,gbw,opt,pot,hess} $LOCAL >& /dev/null' ;
+  echo 'cd $''LOCAL' ;
+  echo "/opt/local/orca-5.0.2/orca $input "'>& $'"PBS_O_WORKDIR/$job.out" ;
+  echo 'cp -f $''(ls | grep -v ".inp\|.tmp") $PBS_O_WORKDIR' ;
+  echo 'cd $''PBS_O_WORKDIR' ;
+  echo 'rm -rf $''LOCAL' ;
+} > $job_file

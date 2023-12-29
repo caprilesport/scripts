@@ -1,7 +1,10 @@
 #!/home/vport/.pyenv/shims/python
+# parses EDA output, get a table with results
 
 import sys
 import re
+
+print
 
 
 def format_tables(
