@@ -1,4 +1,6 @@
 #!/usr/bin/python3
+# got this from:
+# https://github.com/schneiderfelipe/scripts/blob/master/interp.py
 
 """Read .interp files from ORCA NEB calculations and create graphs."""
 
