@@ -1,0 +1,40 @@
+#!/usr/bin/bash
+CURRENT_DIR=`pwd`'/'
+
+CLUSTER=$1
+
+if [[ "$CLUSTER" == "newton" ]] ; then
+  REMOTE=$NEWTON_PROJECTS
+  REMOTE_SHELL="bash"
+elif [[ "$CLUSTER" == "jupiter" ]] ; then
+  REMOTE=$JUPITER_PROJECTS
+  REMOTE_SHELL="bash"
+elif [[ "$CLUSTER" == "pipeline" ]] ; then
+  REMOTE=$LOCAL_PROJECTS
+  REMOTE_SHELL="zsh"
+else
+  echo "ERROR:\n First argument must be 'newton', 'pipeline' or 'jupiter'"
+  exit
+fi
+
+echo $CURRENT_DIR
+echo $LOCAL_PROJECTS
+
+
+if [[ "$CURRENT_DIR" == "$LOCAL_PROJECTS"* ]] ; then
+
+  echo "Current dir is a $CLUSTER subfolder"
+  
+  LEN_LOCAL=${#LOCAL_PROJECTS}
+  LEN_CURRENT=${#CURRENT_DIR}
+  TARGET=$REMOTE${CURRENT_DIR:$LEN_LOCAL:$LEN_CURRENT}
+  
+else 
+
+  echo "Current dir is NOT a $CLUSTER subfolder. Quitting."
+  exit
+
+fi
+
+
+ssh -t $CLUSTER "cd $TARGET ; $REMOTE_SHELL --login"
