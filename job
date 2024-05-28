@@ -1,0 +1,6 @@
+#!/usr/bin/bash
+
+infile=$1
+outfile="${infile%.*}".out
+
+nohup /home/vport/software/orca_5_0_4/orca $infile --use-hwthread-cpus > $outfile &
