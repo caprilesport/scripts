@@ -11,16 +11,14 @@
 
 # Change your local and remote working directories here.
 
-local=/home/vinicp/Chem/doutorado/projects/
-
 if [[ "$1" == "newton" ]] ; then
-  remote=newton:/mnt/data/vport/projects/
+  remote=newton:$NEWTON_PROJECTS
 elif [[ "$1" == "jupiter" ]] ; then
-  remote=jupiter:/home/vport/projects/
-elif [[ "$1" == "adf" ]] ; then
-  remote=adf:/home/geem/vport/projects/
+  remote=jupiter:$JUPITER_PROJECTS
+elif [[ "$1" == "pipeline" ]] ; then
+  remote=pipeline:$LOCAL_PROJECTS
 else
-  echo "ERROR: First argument must be 'newton' or 'jupiter'"
+  echo "ERROR: First argument must be 'newton', 'pipeline' or 'jupiter'"
   exit
 fi
 
@@ -29,11 +27,11 @@ echo "Current directory: $current_dir"
 
 # check if current folder is a subfolder of the local directory defined above:
 
-if [[ "$current_dir" == "$local"* ]] ; then
+if [[ "$current_dir" == "$LOCAL_PROJECTS"* ]] ; then
 
   echo "Current dir is a $remote subfolder"
   
-  len_local=${#local}
+  len_local=${#LOCAL_PROJECTS}
   len_current=${#current_dir}
   target=$remote${current_dir:$len_local:$len_current}
   
