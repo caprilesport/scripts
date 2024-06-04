@@ -1,17 +1,17 @@
 #!/usr/bin/bash
+
+#!/usr/bin/bash
 CURRENT_DIR=`pwd`'/'
 
 CLUSTER=$1
+FILE=$2
 
 if [[ "$CLUSTER" == "newton" ]] ; then
   REMOTE=$NEWTON_PROJECTS
-  REMOTE_SHELL="bash"
 elif [[ "$CLUSTER" == "jupiter" ]] ; then
   REMOTE=$JUPITER_PROJECTS
-  REMOTE_SHELL="bash"
 elif [[ "$CLUSTER" == "pipeline" ]] ; then
   REMOTE=$LOCAL_PROJECTS
-  REMOTE_SHELL="zsh"
 else
   echo "ERROR: First argument must be 'newton', 'pipeline' or 'jupiter'"
   exit
@@ -26,4 +26,5 @@ else
   exit
 fi
 
-ssh -t $CLUSTER "cd $TARGET ; $REMOTE_SHELL --login"
+ssh $CLUSTER "cd $TARGET && tail -f $FILE"
+
