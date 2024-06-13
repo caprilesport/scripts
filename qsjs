@@ -4,30 +4,30 @@ cluster=$1
 
 current_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-qstat_output=$(ssh $cluster "qstat -f -F json")
+qstat_output=$(ssh $cluster "qstat -fx -F json")
 
 jq_query=$(echo $qstat_output |  jq '[.Jobs | to_entries[] | 
   {
-    job_id: .key, 
-    job_owner: .value.Job_Owner, 
-    job_name: .value.Job_Name, 
-    working_dir: .value.Variable_List.PBS_O_WORKDIR, 
+    id: .key, 
+    ncpus: .value.Resource_List.ncpus,
+    mem: .value.Resource_List.mem,
+    owner: .value.Job_Owner, 
+    name: .value.Job_Name, 
+    pwd: .value.Variable_List.PBS_O_WORKDIR, 
     status: .value.job_state, 
     queue: .value.queue, 
     node: .value.exec_vnode, 
     walltime: .value.resources_used.walltime, 
     ctime: .value.ctime, 
-    stime:.value.stime
+    stime: .value.stime
   }]')
 
 end_array=$(jq -n --arg date "$current_date" --arg cluster "$cluster" --argjson jobs "$jq_query" '
 {
   fetch_date: $date,
-
-    cluster: $cluster,
+  cluster: $cluster,
   jobs: $jobs
 }')
 
 echo $end_array
-
 
