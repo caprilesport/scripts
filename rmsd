@@ -1,0 +1,49 @@
+#!python
+
+import os
+import sys
+import subprocess
+import glob
+
+
+PYTHON_PATH = "/home/vport/projects/scripts/.scripts_environment/bin/python"
+SCRIPT_PATH = "/home/vport/projects/scripts/calculate_rmsd"
+
+
+def calculate_rmsd(file_a, file_b):
+    command = f"{PYTHON_PATH} {SCRIPT_PATH} {file_a} {file_b}"
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    output = result.stdout.strip()
+
+    if output:
+        try:
+            # Extrair o valor de RMSD do output
+            rmsd = float(output.split()[-1])
+        except ValueError:
+            print(f"Erro ao converter RMSD para float: {output}")
+            rmsd = None
+    else:
+        print("Erro: Saída do cálculo do RMSD está vazia.")
+        rmsd = None
+
+    return rmsd
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Uso: python script.py FILE_A_pattern")
+        print("Exemplo: python script.py G*.xyz")
+        sys.exit(1)
+
+    file_a_pattern = sys.argv[1]
+    files_list = glob.glob(file_a_pattern)
+    files_list.sort()
+    print(files_list)
+
+    print("FILE_A        FILE_B              RMSD")
+
+    for file_a in files_list:
+        for file_b in files_list:
+            rmsd = calculate_rmsd(file_a, file_b)
+            if rmsd < 0.1 and file_a != file_b:
+                print(f"{os.path.basename(file_a):<13} {file_b:<20} {rmsd}")
