@@ -1,12 +1,15 @@
 #!/bin/bash
 
+qstatemp="$HOME/.qstat"
+jqquery="$HOME/.jqquery"
+
 cluster=$1
 
 current_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-qstat_output=$(ssh $cluster "qstat -fx -F json")
+ssh "$cluster" "qstat -fx -F json" > "$qstatemp"
 
-jq_query=$(echo $qstat_output |  jq '[.Jobs | to_entries[] | 
+cat "$qstatemp" |  jq '[.Jobs | to_entries[] | 
   {
     id: .key, 
     ncpus: .value.Resource_List.ncpus,
@@ -20,14 +23,13 @@ jq_query=$(echo $qstat_output |  jq '[.Jobs | to_entries[] |
     walltime: .value.resources_used.walltime, 
     ctime: .value.ctime, 
     stime: .value.stime
-  }]')
+  }]' > "$jqquery"
 
-end_array=$(jq -n --arg date "$current_date" --arg cluster "$cluster" --argjson jobs "$jq_query" '
+jq -n --arg date "$current_date" --arg cluster "$cluster" --slurpfile jobs "$jqquery" '
 {
   fetch_date: $date,
   cluster: $cluster,
-  jobs: $jobs
-}')
+  jobs: $jobs[0]
+}'
 
-echo $end_array
 
