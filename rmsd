@@ -1,49 +1,159 @@
 #!python
+from rich.progress import Progress
+from rich.console import Console
+from rich.table import Table
+from rich import box
 
+from pathlib import Path
 import os
-import sys
-import subprocess
 import glob
+import subprocess
+import argparse
+import json
 
 
 PYTHON_PATH = "/home/vport/projects/scripts/.scripts_environment/bin/python"
 SCRIPT_PATH = "/home/vport/projects/scripts/calculate_rmsd"
 
+CACHE_FILE = ".rmsd"
 
-def calculate_rmsd(file_a, file_b):
-    command = f"{PYTHON_PATH} {SCRIPT_PATH} {file_a} {file_b}"
-    result = subprocess.run(command, shell=True, capture_output=True, text=True)
-    output = result.stdout.strip()
 
-    if output:
-        try:
-            # Extrair o valor de RMSD do output
-            rmsd = float(output.split()[-1])
-        except ValueError:
-            print(f"Erro ao converter RMSD para float: {output}")
-            rmsd = None
-    else:
-        print("Erro: Saída do cálculo do RMSD está vazia.")
-        rmsd = None
+class Rmsd:
+    def __init__(self, file1, file2, rmsd):
+        self.file1 = file1
+        self.file2 = file2
+        self.rmsd = rmsd
 
-    return rmsd
+    def toJSON(self):
+        return json.dumps(self.__dict__)
+
+    def __eq__(self, other):
+        return self.file1 == other.file1 and self.file2 == other.file2
+
+    def calculate_rmsd(self):
+        if self.rmsd is None:
+            command = f"{PYTHON_PATH} {SCRIPT_PATH} {self.file1} {self.file2}"
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            output = result.stdout.strip()
+
+            if output:
+                try:
+                    # Extrair o valor de RMSD do output
+                    rmsd = float(output.split()[-1])
+                except ValueError:
+                    print(f"Erro ao converter RMSD para float: {output}")
+                    rmsd = None
+            else:
+                print("Erro: Saída do cálculo do RMSD está vazia.")
+                rmsd = None
+
+            self.rmsd = rmsd
+
+
+def handle_args():
+    parser = argparse.ArgumentParser(
+        description="Calculate RMSD between files matching a pattern."
+    )
+
+    parser.add_argument(
+        "-r",
+        "--remove",
+        action="store_true",
+        help="Remove every file that has the root of the same xyz file that was filtered.",
+    )
+
+    parser.add_argument(
+        "-t",
+        "--tolerance",
+        type=float,
+        help="Tolerance for RMSD comparison.",
+    )
+
+    parser.add_argument(
+        "files",
+        nargs="+",
+        help="List of xyz files (at least two are required), format is mandatory to be .xyz",
+    )
+
+    return parser.parse_args()
+
+
+def load_cache():
+    rmsds = []
+    try:
+        with open(CACHE_FILE) as cache_data:
+            for blob in json.load(cache_data):
+                rmsds.append(Rmsd(**blob))
+    except FileNotFoundError:
+        print("No cache file found.")
+    return rmsds
+
+
+def clean_file(file, rmsds):
+    for blob in rmsds:
+        if blob.file1 == file or blob.file2 == file:
+            rmsds.remove(blob)
+
+    # clean all files that contain the rootname of the xyz file
+    rootname = Path(file).stem
+
+    for filename in glob.glob(f"./{rootname}*"):
+        os.remove(filename)
+
+
+def generate_rmsd_list(cache, files):
+    for idx1 in range(0, len(files)):
+        file_1 = files[idx1]
+        for idx2 in range(idx1 + 1, len(files)):
+            file_2 = files[idx2]
+
+            obj = Rmsd(file_1, file_2, None)
+
+            if obj in cache:
+                pass
+            else:
+                cache.append(obj)
+
+    return cache
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Uso: python script.py FILE_A_pattern")
-        print("Exemplo: python script.py G*.xyz")
-        sys.exit(1)
+    args = handle_args()
 
-    file_a_pattern = sys.argv[1]
-    files_list = glob.glob(file_a_pattern)
-    files_list.sort()
-    print(files_list)
+    rmsds = generate_rmsd_list(load_cache(), args.files)
 
-    print("FILE_A        FILE_B              RMSD")
+    table = Table(box=box.MINIMAL)
+    table.add_column("File 1", justify="center")
+    table.add_column("File 2", justify="center")
+    table.add_column("RMSD", justify="center")
 
-    for file_a in files_list:
-        for file_b in files_list:
-            rmsd = calculate_rmsd(file_a, file_b)
-            if rmsd < 0.1 and file_a != file_b:
-                print(f"{os.path.basename(file_a):<13} {file_b:<20} {rmsd}")
+    total_tasks = len(rmsds)
+
+    filtered = []
+
+    try:
+        with Progress() as progress:
+            task = progress.add_task("", total=total_tasks)
+            for obj in rmsds:
+                obj.calculate_rmsd()
+                progress.update(task, advance=1)
+                if args.tolerance is not None:
+                    if obj.rmsd < args.tolerance:
+                        table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd))
+                        filtered.append(obj.file2)
+                else:
+                    table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd))
+
+        if args.remove:
+            for file in filtered:
+                clean_file(file, rmsds)
+
+        with open(CACHE_FILE, "w") as c:
+            json.dump(rmsds, c, default=lambda o: o.__dict__, indent=4)
+
+    except KeyboardInterrupt:
+        with open(CACHE_FILE, "w") as c:
+            json.dump(rmsds, c, default=lambda o: o.__dict__, indent=4)
+
+    console = Console()
+    console.print(table)
