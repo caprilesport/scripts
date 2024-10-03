@@ -1,0 +1,90 @@
+#!python
+
+# import numpy
+# import os
+
+from rich.console import Console
+from rich.table import Table
+import argparse
+from pathlib import Path
+from math import exp
+
+K = 0.001987204259
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Calculate the boltzmann distribution of a set of ORCA logfiles."
+    )
+
+    # Add temperature argument with a default value of 293 Kelvin
+    parser.add_argument(
+        "-t",
+        "--temperature",
+        type=float,
+        default=293,
+        help="Temperature in Kelvin (default: 293)",
+    )
+
+    parser.add_argument(
+        "files", nargs="+", help="List of files (at least two are required)"
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Check if at least two files are provided
+    if len(args.files) < 2:
+        parser.error("At least two files are required.")
+
+    return args
+
+
+def parse_energy(file: str):
+    with open(file, "r") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        if "Final Gibbs free energy" in line:
+            return float(line.split()[-2])
+
+
+def gibbs_factor(energy, temperature):
+    return exp(-energy / (K * temperature))
+
+
+def main():
+    args = parse_arguments()
+    energy_dict = {file: parse_energy(file) * 627.503 for file in args.files}
+    energy_dict = {
+        file: (energy - min(energy_dict.values()))
+        for file, energy in energy_dict.items()
+    }
+
+    exponentials = {}
+
+    for k, v in energy_dict.items():
+        exponentials[k] = gibbs_factor(v, args.temperature)
+
+    normalization_factor = sum(exponentials.values())
+    populations = {k: (v / normalization_factor) for k, v in exponentials.items()}
+    populations = {
+        k: v
+        for k, v in sorted(populations.items(), key=lambda item: item[1], reverse=True)
+    }
+
+    console = Console()
+
+    table = Table()
+    table.add_column("File")
+    table.add_column("Population (%)")
+
+    for k, v in populations.items():
+        table.add_row(f"{Path(k).stem}", "{:.2f}%".format(v * 100))
+
+    console.print(table)
+
+
+# Example usage
+if __name__ == "__main__":
+    main()
