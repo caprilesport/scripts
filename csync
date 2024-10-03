@@ -12,11 +12,14 @@
 # Change your local and remote working directories here.
 
 if [[ "$1" == "newton" ]] ; then
-  remote=newton:$NEWTON_PROJECTS
+  remote="newton"
+  projects=$NEWTON_PROJECTS
 elif [[ "$1" == "jupiter" ]] ; then
-  remote=jupiter:$JUPITER_PROJECTS
+  remote="jupiter"
+  projects=$JUPITER_PROJECTS
 elif [[ "$1" == "pipeline" ]] ; then
-  remote=pipeline:$LOCAL_PROJECTS
+  remote="pipeline"
+  projects=$LOCAL_PROJECTS
 else
   echo "ERROR: First argument must be 'newton', 'pipeline' or 'jupiter'"
   exit
@@ -33,7 +36,8 @@ if [[ "$current_dir" == "$LOCAL_PROJECTS"* ]] ; then
   
   len_local=${#LOCAL_PROJECTS}
   len_current=${#current_dir}
-  target=$remote${current_dir:$len_local:$len_current}
+  remote_dir=${current_dir:$len_local:$len_current}
+  target=$remote:$projects$remote_dir
   
   # set the correct folders
   current_local=$current_dir
@@ -86,6 +90,8 @@ elif [[ "$3" > " " ]] ; then
   exit
 fi
 
-rsync -rtvuc $ignore_flag $last_flag $source $destination 
+ssh $1 "mkdir -p $projects$remote_dir"
+
+rsync -rtvuc $ignore_flag $last_flag $source $destination
 
 
