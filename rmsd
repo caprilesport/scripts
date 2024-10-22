@@ -1,19 +1,25 @@
 #!python
+
 from rich.progress import Progress
 from rich.console import Console
 from rich.table import Table
 from rich import box
 
 from pathlib import Path
+from InquirerPy import inquirer
+
 import os
 import glob
 import subprocess
 import argparse
 import json
+import subprocess
 
 
 PYTHON_PATH = "/home/vport/projects/scripts/.scripts_environment/bin/python"
 SCRIPT_PATH = "/home/vport/projects/scripts/calculate_rmsd"
+CHEMCRAFT_PATH = "/home/vport/.wine/drive_c/chemcraft/Chemcraft.exe"
+
 
 CACHE_FILE = ".rmsd"
 
@@ -32,7 +38,7 @@ class Rmsd:
 
     def calculate_rmsd(self):
         if self.rmsd is None:
-            command = f"{PYTHON_PATH} {SCRIPT_PATH} {self.file1} {self.file2}"
+            command = f"{PYTHON_PATH} {SCRIPT_PATH} {self.file1} {self.file2} --reorder"
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
             output = result.stdout.strip()
 
@@ -48,6 +54,12 @@ class Rmsd:
                 rmsd = None
 
             self.rmsd = rmsd
+
+    def view(self):
+        file1 = ["wine", CHEMCRAFT_PATH, self.file1]
+        file2 = ["wine", CHEMCRAFT_PATH, self.file2]
+        subprocess.Popen(file1, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(file2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def handle_args():
@@ -67,6 +79,13 @@ def handle_args():
         "--tolerance",
         type=float,
         help="Tolerance for RMSD comparison.",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--view",
+        action="store_true",
+        help="Open files in chemcraft for inspection.",
     )
 
     parser.add_argument(
@@ -117,15 +136,50 @@ def generate_rmsd_list(cache, files):
     return cache
 
 
-if __name__ == "__main__":
-    args = handle_args()
-
-    rmsds = generate_rmsd_list(load_cache(), args.files)
-
+def gen_rich_table(rmsds, tolerance):
     table = Table(box=box.MINIMAL)
     table.add_column("File 1", justify="center")
     table.add_column("File 2", justify="center")
     table.add_column("RMSD", justify="center")
+
+    for obj in rmsds:
+        if tolerance is not None:
+            if obj.rmsd < tolerance:
+                table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd))
+        else:
+            table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd))
+
+    return table
+
+
+def ask_view_pair(rmsds, tolerance):
+    rmsd_choices = []
+    for obj in rmsds:
+        if tolerance is not None:
+            if obj.rmsd < tolerance:
+                rmsd_choices.append(obj)
+        else:
+            rmsd_choices = rmsds
+
+    string_choices = [
+        "file1: {}, file2: {}, rmsd: {}".format(i.file1, i.file2, i.rmsd)
+        for i in rmsd_choices
+    ]
+
+    choice = inquirer.fuzzy(
+        message="Select a file pair",
+        choices=string_choices,
+        default=None,
+    ).execute()
+
+    return rmsd_choices[string_choices.index(choice)]
+
+
+if __name__ == "__main__":
+    args = handle_args()
+    cache = load_cache()
+
+    rmsds = generate_rmsd_list(cache, args.files)
 
     total_tasks = len(rmsds)
 
@@ -139,10 +193,7 @@ if __name__ == "__main__":
                 progress.update(task, advance=1)
                 if args.tolerance is not None:
                     if obj.rmsd < args.tolerance:
-                        table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd))
                         filtered.append(obj.file2)
-                else:
-                    table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd))
 
         if args.remove:
             for file in filtered:
@@ -155,5 +206,16 @@ if __name__ == "__main__":
         with open(CACHE_FILE, "w") as c:
             json.dump(rmsds, c, default=lambda o: o.__dict__, indent=4)
 
+    table = gen_rich_table(rmsds, args.tolerance)
     console = Console()
     console.print(table)
+
+    if args.view:
+        another = True
+        while another:
+            pair = ask_view_pair(rmsds, args.tolerance)
+            pair.view()
+
+            another = inquirer.confirm(
+                message="Open another pair?", default=False
+            ).execute()
