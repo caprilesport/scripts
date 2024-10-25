@@ -1,51 +1,93 @@
 #!/usr/bin/bash
 
-# Script for submitting jobs at the supercomputers I use.
+# Script for submitting jobs to the supercomputers I use.
+# Use with:
+#   qsub [remote] [job_file] [--queue queue_name]
+#   Example: qsub jupiter job.inp --queue big   # submit to jupiter with queue big
+#            qsub pipeline job.inp              # submit to pipeline
 
-# use with:  qsub jupiter job.inp   #submit @ jupiter
-#            qsub newton   job.inp   #submit @ newton
+usage() {
+  echo "Usage: $0 [remote] [job_file] [--queue queue_name]"
+  echo
+  echo "Arguments:"
+  echo "  remote     The remote server to submit the job: jupiter or pipeline."
+  echo "  job_file   The job input file (e.g., job.inp)."
+  echo
+  echo "Options:"
+  echo "  --queue    Specify the queue name for the jupiter server."
+  echo "  -h, --help Show this help message."
+  exit 1
+}
 
-# Change your working directory here
-local=/home/vinicp/Chem/doutorado/projects/
+# Initialize variables
+queue_name=""
 
-# check what is cluster to submit job (first argument) and set remote and local directories
-if [[ "$1" == "newton" ]] ; then
-  cluster="newton"
-  remote=/mnt/data/vport/projects/
-  filename=$2
-  file="${filename%%.*}"
-  job="qsub $file.job"
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      ;;
+    --queue)
+      queue_name="$2"
+      shift 2
+      ;;
+    jupiter|pipeline)
+      remote="$1"
+      shift
+      ;;
+    *)
+      job_file="$1"
+      shift
+      ;;
+  esac
+done
 
-  # if the cluster is newton first generate the .job file to be submited
-  qprep_newton $filename 16
-
-elif [[ "$1" == "jupiter" ]] ; then
-  cluster="jupiter"
-  remote=/home/vport/projects/
-  job="job $2 1 8"
-
-else
-  echo "ERROR: First argument must be 'newton' or 'jupiter'"
-  exit
+# Ensure required arguments are provided
+if [[ -z "$remote" || -z "$job_file" ]]; then
+  echo "ERROR: Missing required arguments."
+  usage
 fi
 
-current_dir=`pwd`'/'
+# Change your local working directory here
+local="/home/vport/projects/"
+filename="${job_file%%.*}"
+current_dir=$(pwd)'/'
 
+# Set remote directories and job commands
+case "$remote" in
+  jupiter)
+    cluster="jupiter"
+    remote_dir="/scratch/vport/projects/"
+    if [[ -n "$queue_name" ]]; then
+      job_command="qorca -q $queue_name $job_file"
+    else
+      job_command="qorca $job_file"
+    fi
+    ;;
+  pipeline)
+    cluster="pipeline"
+    remote_dir="/home/vport/projects/"
+    job_command="pueue add -- job $job_file"
+    ;;
+  *)
+    echo "ERROR: Invalid remote '$remote'. Must be 'jupiter' or 'pipeline'."
+    usage
+    ;;
+esac
+
+# Set up target directories
 len_local=${#local}
 len_current=${#current_dir}
-target=$remote${current_dir:$len_local:$len_current}
+remote_target="${remote_dir}${current_dir:$len_local:$len_current}"
+current_remote="$remote_target"
 
-# set the correct folder
-current_remote=$target
+# Push all files of the current folder to the remote and submit the job
+csync "$cluster" push
 
-
-# push all files of current folder to remote and submit job
-csync $cluster push 
-
-ssh $cluster "
-cd $current_remote
-echo "Submitting file $i at $cluster:$current_remote"
-$job
+# Submit the job on the remote server
+ssh "$cluster" "
+  cd \"$current_remote\"
+  echo \"Submitting file $job_file at $cluster:$current_remote\"
+  $job_command
 "
-
-

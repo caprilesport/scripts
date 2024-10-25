@@ -21,7 +21,7 @@ STATUS=$(echo "$1" | tr '[:lower:]' '[:upper:]')
 shift
 
 # Default value for the number of jobs
-NUM_JOBS=20
+NUM_JOBS=40
 
 # Parse optional arguments
 while getopts ":n:" opt; do
