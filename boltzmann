@@ -1,15 +1,21 @@
 #!/home/vport/projects/scripts/.scripts_environment/bin/python
 
-# import numpy
-# import os
-
-from rich.console import Console, JustifyMethod
-from rich.table import Table
+import os
 import argparse
+import glob
+
 from pathlib import Path
 from math import exp
 
+from rich.console import Console
+from rich.table import Table
+
 K = 0.001987204259
+XTBHESSEXT = ".sph"
+
+
+class GibbsEnergyNotFound(Exception):
+    pass
 
 
 def parse_arguments():
@@ -26,6 +32,22 @@ def parse_arguments():
         help="Temperature in Kelvin (default: 293)",
     )
 
+    # Add temperature argument with a default value of 293 Kelvin
+    parser.add_argument(
+        "-x",
+        "--xtbhess",
+        action="store_true",
+        help="Use the single point hessian from xtb",
+    )
+
+    parser.add_argument(
+        "-r",
+        "--remove",
+        type=float,
+        default=0,
+        help="Remove all files above a certain threshhold",
+    )
+
     parser.add_argument(
         "files", nargs="+", help="List of files (at least two are required)"
     )
@@ -40,13 +62,52 @@ def parse_arguments():
     return args
 
 
-def parse_energy(file: str):
+def parse_gibbs_orca(file: str):
+    energy = 0
     with open(file, "r") as f:
         lines = f.readlines()
 
     for line in lines:
         if "Final Gibbs free energy" in line:
-            return float(line.split()[-2])
+            energy = float(line.split()[-2])
+        # else:
+
+    if energy == 0:
+        return GibbsEnergyNotFound
+
+    return energy
+
+
+def parse_gibbs_orca_xtb(file: str):
+    hessfile = Path(file).stem + XTBHESSEXT
+
+    electronic_energy = 0
+    grrho = 0
+
+    with open(file, "r") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        if "FINAL SINGLE POINT ENERGY" in line:
+            electronic_energy =  float(line.split()[-1])
+
+    with open(hessfile, "r") as f:
+        hesslines = f.readlines()
+
+    for line in hesslines:
+        if "G(RRHO) contrib" in line:
+            grrho = float(line.replace(":", "").rstrip().split(" ")[-2])
+
+    return electronic_energy + grrho
+
+
+def clean_files(energy_dict: dict[str, float], threshold):
+    remove = [k for k, v in energy_dict.items() if v > threshold]
+    remove = [Path(file).stem for file in remove]
+
+    for rootname in remove:
+        for filename in glob.glob(f"./{rootname}*"):
+            os.remove(filename)
 
 
 def gibbs_factor(energy, temperature):
@@ -55,7 +116,13 @@ def gibbs_factor(energy, temperature):
 
 def main():
     args = parse_arguments()
-    energy_dict = {file: parse_energy(file) * 627.503 for file in args.files}
+    if args.xtbhess:
+        energy_dict = {
+            file: parse_gibbs_orca_xtb(file) * 627.503 for file in args.files
+        }
+    else:
+        energy_dict = {file: parse_gibbs_orca(file) * 627.503 for file in args.files}
+
     energy_dict = {
         file: (energy - min(energy_dict.values()))
         for file, energy in energy_dict.items()
@@ -76,18 +143,25 @@ def main():
     console = Console()
 
     table = Table()
-    table.add_column("File")
-    table.add_column("Population (%)")
-    table.add_column("Relative Gibbs free energy")
+    table.add_column("Filename")
+    table.add_column("Pop (%)")
+    table.add_column("deltaG")
+    table.add_column("Rank")
+    count = 1
 
     for k, v in populations.items():
         table.add_row(
             f"{Path(k).stem}",
             "{:.2f}%".format(v * 100),
             "{:.3f} kcal/mol".format(energy_dict[k]),
+            "{}".format(count),
         )
+        count += 1
 
     console.print(table)
+
+    if args.remove != 0:
+        clean_files(energy_dict, args.remove)
 
 
 # Example usage
