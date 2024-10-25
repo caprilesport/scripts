@@ -1,0 +1,84 @@
+#!/usr/bin/bash
+
+# Script for running XTB jobs with customizable options.
+# Use with:
+#   xtb_run [infile] [options]
+#   Example: xtb_run molecule.inp -P 16 --solvent water -c 1 -u 2
+
+usage() {
+  echo "Usage: $0 [infile] [options]"
+  echo
+  echo "Arguments:"
+  echo "  infile         The input file for the XTB job (e.g., molecule.inp)."
+  echo
+  echo "Options:"
+  echo "  -T N           Number of processors to use (default: 6)."
+  echo "  --solvent NAME Specify the solvent model (optional)."
+  echo "  -c CHARGE      Specify the molecular charge (default: 0)."
+  echo "  -u UNPAIRED    Specify the number of unpaired electrons (default: 0)."
+  echo "  -h, --help     Show this help message."
+  exit 1
+}
+
+# Default values
+processors=6
+solvent=""
+charge=0
+unpaired=0
+infile=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      ;;
+    -T|--threads)
+      processors="$2"
+      shift 2
+      ;;
+    -s|--solvent)
+      solvent="$2"
+      shift 2
+      ;;
+    -c|--charge)
+      charge="$2"
+      shift 2
+      ;;
+    -u|--uhf)
+      unpaired="$2"
+      shift 2
+      ;;
+    *)
+      if [[ -z "$infile" ]]; then
+        infile="$1"
+      else
+        echo "ERROR: Unknown argument '$1'."
+        usage
+      fi
+      shift
+      ;;
+  esac
+done
+
+# Ensure required arguments are provided
+if [[ -z "$infile" ]]; then
+  echo "ERROR: Missing required input file."
+  usage
+fi
+
+# Set output file name
+outfile="${infile%%.*}.sph"
+
+# Construct the XTB command
+xtb_cmd="xtb $infile --bhess -P $processors -c $charge -u $unpaired"
+
+# Add the solvent option if provided
+if [[ -n "$solvent" ]]; then
+  xtb_cmd+=" --alpb $solvent"
+fi
+
+# echo $xtb_cmd
+
+# Run the XTB command
+$xtb_cmd > "$outfile"
