@@ -13,7 +13,7 @@ for arg in "$@"; do
 done
 
 # Build the find command dynamically
-find_command='find . -type f \( -name "*.gbw" -o -name "*.cpcm" -o -name "*.densities" -o -name "*.hostnames" -o -name "*job*" -o -name "*engrad" -o -name "*opt" -o -name "*smd*" \)'
+find_command='find . -type f \( -name "*.gbw" -o -name "*.cpcm" -o -name "*.densities" -o -name "*.hostnames" -o -name "*job*" -o -name "*engrad" -o -name "*opt" -o -name "*smd*" -o -name "*last*" \)'
 
 # Add exclusion patterns based on user input
 for pattern in "${patterns_to_keep[@]}"; do

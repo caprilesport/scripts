@@ -1,6 +1,31 @@
 #!/usr/bin/bash
 
-infile=$1
-outfile="${infile%.*}".out
+# Default ORCA executable
+orca_executable="/home/vport/software/orca_5_0_4/orca"
 
-nohup /home/vport/software/orca_5_0_4/orca $infile --use-hwthread-cpus > $outfile &
+# Parse optional version flag
+while getopts ":v:" opt; do
+  case $opt in
+    v)
+      if [[ $OPTARG == "6" ]]; then
+        orca_executable="/home/vport/software/orca_6_0_0/orca"
+      elif [[ $OPTARG != "5" ]]; then
+        echo "Unsupported ORCA version. Use 5 (default) or 6."
+        exit 1
+      fi
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG"
+      exit 1
+      ;;
+  esac
+done
+
+# Shift arguments to get the input file as $1
+shift $((OPTIND - 1))
+
+infile=$1
+outfile="${infile%.*}.out"
+
+# Run ORCA with the chosen executable
+$orca_executable "$infile" --use-hwthread-cpus > "$outfile"
