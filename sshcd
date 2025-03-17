@@ -1,29 +1,80 @@
-#!/usr/bin/bash
-CURRENT_DIR=`pwd`'/'
+#!/usr/bin/env bash
 
-CLUSTER=$1
+usage() {
+  echo "Usage: $0 [cluster] [optional: directory]"
+  echo
+  echo "Arguments:"
+  echo "  cluster   The remote server to navigate to: newton, jupiter, or pipeline."
+  echo "  directory (optional)   Specify a directory to navigate to. If omitted, defaults to the current directory if it’s a project subfolder."
+  echo
+  echo "Options:"
+  echo "  -h, --help    Show this help message."
+  exit 1
+}
 
-if [[ "$CLUSTER" == "newton" ]] ; then
-  REMOTE=$NEWTON_PROJECTS
-  REMOTE_SHELL="bash"
-elif [[ "$CLUSTER" == "jupiter" ]] ; then
-  REMOTE=$JUPITER_PROJECTS
-  REMOTE_SHELL="bash"
-elif [[ "$CLUSTER" == "pipeline" ]] ; then
-  REMOTE=$LOCAL_PROJECTS
-  REMOTE_SHELL="zsh"
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      ;;
+    newton|jupiter|pipeline)
+      cluster="$1"
+      case "$cluster" in
+        newton)
+          remote_dir=$NEWTON_PROJECTS
+          remote_shell="bash"
+          ;;
+        jupiter)
+          remote_dir=$JUPITER_PROJECTS
+          remote_shell="bash"
+          ;;
+        pipeline)
+          remote_dir=$LOCAL_PROJECTS
+          remote_shell="zsh"
+          ;;
+        *)
+          echo "ERROR: Invalid cluster '$1'. Must be 'newton', 'jupiter', or 'pipeline'."
+          usage
+          ;;
+      esac
+      shift
+      ;;
+    *)
+      target_dir="$1"
+      shift
+      ;;
+  esac
+done
+
+# Validate cluster selection
+if [[ -z "$cluster" ]]; then
+  echo "ERROR: Missing required cluster argument."
+  usage
+fi
+
+# Function to check if the directory is a subfolder of the project
+check_local_subfolder() {
+  CURRENT_DIR=$(pwd)'/'
+  if [[ "$CURRENT_DIR" == "$LOCAL_PROJECTS"* ]]; then
+    len_local=${#LOCAL_PROJECTS}
+    len_current=${#CURRENT_DIR}
+    target="$remote_dir${CURRENT_DIR:$len_local:$len_current}"
+  else
+    echo "ERROR: Current directory is NOT a subfolder of the $cluster projects."
+    exit 1
+  fi
+}
+
+# Handle target directory
+if [[ -z "$target_dir" ]]; then
+  # Default to checking if current directory is a subfolder
+  check_local_subfolder
 else
-  echo "ERROR: First argument must be 'newton', 'pipeline' or 'jupiter'"
-  exit
+  # Use provided directory as target
+  target="$target_dir"
 fi
 
-if [[ "$CURRENT_DIR" == "$LOCAL_PROJECTS"* ]] ; then
-  LEN_LOCAL=${#LOCAL_PROJECTS}
-  LEN_CURRENT=${#CURRENT_DIR}
-  TARGET=$REMOTE${CURRENT_DIR:$LEN_LOCAL:$LEN_CURRENT}
-else 
-  echo "Current dir is NOT a $CLUSTER subfolder. Quitting."
-  exit
-fi
-
-ssh -t $CLUSTER "cd $TARGET ; $REMOTE_SHELL --login"
+# Construct and run SSH command
+ssh_command="ssh -t $cluster \"if [[ -d $target ]]; then cd $target && $remote_shell --login; else echo 'ERROR: Directory does not exist on remote.'; fi\""
+eval "$ssh_command"
