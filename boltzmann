@@ -1,4 +1,4 @@
-#!/home/vport/projects/scripts/.scripts_environment/bin/python
+#!/home/vport/projects/scripts/.venv/bin/python
 
 import os
 import argparse
@@ -38,6 +38,14 @@ def parse_arguments():
         "--xtbhess",
         action="store_true",
         help="Use the single point hessian from xtb",
+    )
+
+    # Add temperature argument with a default value of 293 Kelvin
+    parser.add_argument(
+        "-l",
+        "--latex",
+        action="store_true",
+        help="Print a latex formatted table",
     )
 
     parser.add_argument(
@@ -100,6 +108,37 @@ def parse_gibbs_orca_xtb(file: str):
 
     return electronic_energy + grrho
 
+def generate_latex_table(populations, energy_dict, temperature):
+    latex_table = []
+    
+    # LaTeX table header
+    latex_table.append("\\begin{table}[h]")
+    latex_table.append("\\centering")
+    latex_table.append(f"\\caption{{Boltzmann population obtained at {temperature} K of the conformers for }}")
+    latex_table.append("\\label{tab:conformer_population}")
+    latex_table.append("\\begin{tabular}{c c c c}")
+    latex_table.append("\\toprule")
+    latex_table.append("Filename & Pop (\\%) & $\\Delta G$ (kcal/mol) & Rank \\\\")
+    
+    # Add rows to the LaTeX table
+    count = 1
+    for k, v in populations.items():
+        filename = Path(k).stem.replace("_", " ")
+        pop_percent = "{:.2f}\\%".format(v * 100)
+        delta_g = "{:.3f}".format(energy_dict[k])
+        rank = "{}".format(count)
+        
+        latex_table.append(f"{filename} & {pop_percent} & {delta_g} & {rank} \\\\")
+        count += 1
+    
+    # LaTeX table footer
+    latex_table.append("\\bottomrule")
+    latex_table.append("\\end{tabular}")
+    latex_table.append("\\end{table}")
+    
+    # Print the LaTeX table
+    print("\n".join(latex_table))
+
 
 def clean_files(energy_dict: dict[str, float], threshold):
     remove = [k for k, v in energy_dict.items() if v > threshold]
@@ -149,16 +188,20 @@ def main():
     table.add_column("Rank")
     count = 1
 
-    for k, v in populations.items():
-        table.add_row(
-            f"{Path(k).stem}",
-            "{:.2f}%".format(v * 100),
-            "{:.3f} kcal/mol".format(energy_dict[k]),
-            "{}".format(count),
-        )
-        count += 1
+    if args.latex:
+        generate_latex_table(populations, energy_dict, args.temperature)
 
-    console.print(table)
+    else:
+        for k, v in populations.items():
+            table.add_row(
+                f"{Path(k).stem}",
+                "{:.2f}%".format(v * 100),
+                "{:.3f} kcal/mol".format(energy_dict[k]),
+                "{}".format(count),
+            )
+            count += 1
+
+        console.print(table)
 
     if args.remove != 0:
         clean_files(energy_dict, args.remove)

@@ -1,4 +1,4 @@
-#!/home/vport/projects/scripts/.scripts_environment/bin/python
+#!/home/vport/projects/scripts/.venv/bin/python
 __doc__ = """
 Calculate Root-mean-square deviation (RMSD) between structure A and B, in XYZ
 or PDB format, using transformation and rotation.
