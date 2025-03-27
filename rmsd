@@ -1,5 +1,4 @@
-#!python
-
+#!/home/vport/projects/scripts/.venv/bin/python
 from rich.progress import Progress
 from rich.console import Console
 from rich.table import Table
@@ -17,7 +16,7 @@ import subprocess
 import operator
 
 
-PYTHON_PATH = "/home/vport/projects/scripts/.scripts_environment/bin/python"
+PYTHON_PATH = "/home/vport/projects/scripts/.venv/bin/python"
 SCRIPT_PATH = "/home/vport/projects/scripts/calculate_rmsd"
 CHEMCRAFT_PATH = "/home/vport/.wine/drive_c/chemcraft/Chemcraft.exe"
 
@@ -25,17 +24,50 @@ CHEMCRAFT_PATH = "/home/vport/.wine/drive_c/chemcraft/Chemcraft.exe"
 CACHE_FILE = ".rmsd"
 
 
+class InvalidXYZfile(Exception):
+    pass
+
+
+class AtomNrMismatch(Exception):
+    pass
+
+
 class Rmsd:
-    def __init__(self, file1, file2, rmsd):
+    def __init__(self, file1, file2, rmsd, weighted):
         self.file1 = file1
         self.file2 = file2
         self.rmsd = rmsd
+        self.weighted = weighted
 
     def toJSON(self):
         return json.dumps(self.__dict__)
 
     def __eq__(self, other):
         return self.file1 == other.file1 and self.file2 == other.file2
+
+    def __len__(self):
+        with open(self.file1) as f:
+            try:
+                len1=int(f.readlines()[0])
+            except:
+                raise InvalidXYZfile("{} is an invalid xyz file".format(self.file1))
+
+        with open(self.file2) as f:
+            try:
+                len2=int(f.readlines()[0])
+            except:
+                raise InvalidXYZfile("{} is an invalid xyz file".format(self.file2))
+
+        if len1 != len2:
+            raise AtomNrMismatch("{} and {} do not have a compatible number of atoms".format(self.file1, self.file2))
+
+        return len1
+
+    def weighted_rmsd(self):
+        if self.rmsd is None:
+            return 0
+        else:
+            return self.rmsd/len(self)
 
     def calculate_rmsd(self):
         if self.rmsd is None:
@@ -55,6 +87,7 @@ class Rmsd:
                 rmsd = None
 
             self.rmsd = rmsd
+            self.weighted = self.weighted_rmsd()
 
     def view(self):
         file1 = ["wine", CHEMCRAFT_PATH, self.file1]
@@ -127,7 +160,7 @@ def generate_rmsd_list(cache, files):
         for idx2 in range(idx1 + 1, len(files)):
             file_2 = files[idx2]
 
-            obj = Rmsd(file_1, file_2, None)
+            obj = Rmsd(file_1, file_2, None, None)
 
             if obj in cache:
                 pass
@@ -142,13 +175,14 @@ def gen_rich_table(rmsds, tolerance):
     table.add_column("File 1", justify="center")
     table.add_column("File 2", justify="center")
     table.add_column("RMSD", justify="center")
+    table.add_column("Weighted RMSD", justify="center")
 
     for obj in rmsds:
         if tolerance is not None:
             if obj.rmsd < tolerance:
-                table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd))
+                table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.3f}".format(obj.weighted))
         else:
-            table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd))
+            table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.3f}".format(obj.weighted))
 
     return table
 
