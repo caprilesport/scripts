@@ -1,0 +1,19 @@
+#!/usr/bin/python3
+import pathlib
+import sys
+
+
+def main():
+    cwd = pathlib.Path().cwd()
+
+    paths = []
+
+    while cwd != pathlib.Path("/home/vport") and cwd != pathlib.Path("/"):
+        cwd = cwd.parent
+        paths.append(cwd)
+
+    for path in paths:
+        sys.stdout.write(str(path) + "\n")
+
+if __name__ == "__main__":
+    main()
