@@ -1,0 +1,150 @@
+#!/home/vport/projects/scripts/.venv/bin/python
+import os
+import argparse
+
+from InquirerPy import inquirer
+from glob import glob
+
+from rich.table import Table
+from rich.console import Console
+
+DEFAULT_REAGENT="./react-freq/init.out"
+DEFAULT_TS="./optts/init.out"
+DEFAULT_PRODUCT="./prod-freq/init.out"
+
+
+def parse_arguments():
+    """
+    Parses command-line arguments for a script that processes ORCA log files to calculate
+    reaction barriers.
+
+    Returns:
+        argparse.Namespace: Parsed arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="This script processes ORCA log files to calculate reaction barriers."
+    )
+
+    parser.add_argument(
+        "-d", "--default",
+        action="store_true",
+        help="Enable the default behavior for parsing ORCA logs."
+    )
+
+    return parser.parse_args()
+
+def is_orca_log(file: str):
+    """
+    Check if a file is an orca based on it's header
+
+    Returns: bool
+    """
+    with open(file, "r") as f:
+        orca = f.readlines()
+        if orca[2].replace(" ", "").rstrip() == "*ORCA*":
+            return True
+        else:
+            return False
+        
+def get_files(extension_glob='*.out'):
+    """
+    Walks the current directory recursively, obtaining all the .out files
+
+    Returns:
+        [path with all the files that match the extension glob].
+    """
+    return [y for x in os.walk(".") for y in glob(os.path.join(x[0], extension_glob))]
+
+def parse_gibbs(file):
+    """
+    Retrieves all possible data about the logfile we're opening.
+    Currently only supports one logfile per parsing cicle.
+    """
+    with open(file, "r") as f:
+        lines = f.readlines()
+
+    gibbsenergy = None
+
+    for idx in range(0, len(lines)):
+        # -------------------
+        # GIBBS FREE ENERGY
+        # -------------------
+
+        # The Gibbs free energy is G = H - T*S
+
+        # Total enthalpy                    ... -12459.92150082 Eh
+        # Total entropy correction          ...     -0.11745335 Eh    -73.70 kcal/mol
+        # -----------------------------------------------------------------------
+        # Final Gibbs free energy         ... -12460.03895416 Eh
+
+        # For completeness - the Gibbs free energy minus the electronic energy
+        # G-E(el)                           ...      0.21787284 Eh    136.72 kcal/mol
+
+        if "Final Gibbs free energy" in lines[idx]:
+            gibbsenergy = float(lines[idx].strip().split()[-2])
+
+    if gibbsenergy is not None:
+        return gibbsenergy
+    else:
+        print("File {} did not have a Gibbs energy line".format(file))
+        raise SystemExit
+
+def select_logs(orca_logs):
+    """
+    Select reagent, TS and product files from a list of logs.
+
+    Returns:
+        [reagent, ts, product].
+    """
+    reagent = inquirer.select(
+        message="Select reagent log",
+        choices=orca_logs,
+        multiselect=False,
+    ).execute()
+
+    orca_logs.remove(reagent)
+
+    transition_state = inquirer.select(
+        message="Select TS log",
+        choices=orca_logs,
+        multiselect=False,
+    ).execute()
+
+    orca_logs.remove(transition_state)
+
+    product = inquirer.select(
+        message="Select product log",
+        choices=orca_logs,
+        multiselect=False,
+    ).execute()
+
+    return [reagent, transition_state, product]
+
+
+def main():
+    args = parse_arguments()
+    if args.default:
+        reagent = DEFAULT_REAGENT
+        transition_state = DEFAULT_TS
+        product = DEFAULT_PRODUCT
+    else:
+        reagent, transition_state, product = select_logs([file for file in get_files() if is_orca_log(file)])
+
+    energies = [parse_gibbs(log) for log in [reagent, transition_state, product]]
+    rel_energies = [(v - energies[0]) * 627.15 for v in energies]
+
+    table = Table(title="Relative energies")
+    table.add_column()
+    table.add_column("Energy (kcal mol-1)")
+
+    table.add_row("Transition State", "{}".format(rel_energies[1]))
+    table.add_row("Product", "{}".format(rel_energies[2]))
+
+    table.add_row("Forward barrier", "{}".format(rel_energies[1]))
+    table.add_row("Backwards barrier", "{}".format(rel_energies[1] - rel_energies[2]))
+
+    console = Console()
+    console.print(table)
+
+if __name__ == "__main__":
+    main()
