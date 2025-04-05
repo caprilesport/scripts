@@ -18,7 +18,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       usage
       ;;
-    newton|jupiter|pipeline)
+    newton|jupiter|trindatimes)
       cluster="$1"
       case "$cluster" in
         newton)
@@ -29,12 +29,12 @@ while [[ $# -gt 0 ]]; do
           remote_dir=$JUPITER_PROJECTS
           remote_shell="bash"
           ;;
-        pipeline)
+        trindatimes)
           remote_dir=$LOCAL_PROJECTS
           remote_shell="zsh"
           ;;
         *)
-          echo "ERROR: Invalid cluster '$1'. Must be 'newton', 'jupiter', or 'pipeline'."
+          echo "ERROR: Invalid cluster '$1'. Must be 'newton', 'jupiter', or 'trindatimes'."
           usage
           ;;
       esac

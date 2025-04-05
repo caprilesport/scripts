@@ -7,10 +7,10 @@ orca_executable="/home/vport/software/orca_6_0_1/orca"
 while getopts ":v:" opt; do
   case $opt in
     v)
-      if [[ $OPTARG == "6" ]]; then
-        orca_executable="/home/vport/software/orca_6_0_1/orca"
-      elif [[ $OPTARG != "5" ]]; then
-        echo "Unsupported ORCA version. Use 5 (default) or 6."
+      if [[ $OPTARG == "5" ]]; then
+        orca_executable="/home/vport/software/orca_5_0_4/orca"
+      elif [[ $OPTARG != "6" ]]; then
+        echo "Unsupported ORCA version. Use 6 (default) or 5."
         exit 1
       fi
       ;;

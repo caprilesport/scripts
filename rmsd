@@ -65,7 +65,7 @@ class Rmsd:
         if self.rmsd is None:
             return 0
         else:
-            return self.rmsd/len(self)
+            return (self.rmsd/len(self)) 
 
     def calculate_rmsd(self):
         if self.rmsd is None:

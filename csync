@@ -8,12 +8,18 @@
 
 # This is heavily inspired by Prof. Dr. Leandro Martinez's script (https://github.com/lmiq/tips/blob/master/GoogleDrive/gdrive)
 # You can also create a .remoteignore file to exclude any file from syncing.
+if [[ $HOST == "trindatimes" ]]; then
+  personal="pipeline"
+else
+  personal="trindatimes"
+fi
+
 
 usage() {
   echo "Usage: $0 [remote] [action] [sync/check] [options]"
   echo
   echo "Arguments:"
-  echo "  remote       The remote server to sync with: newton, jupiter, or pipeline."
+  echo "  remote       The remote server to sync with: newton, jupiter, or $personal."
   echo "  action       The action to perform: push or pull."
   echo "  sync/check   (optional) Synchronize the files or check for differences."
   echo
@@ -35,7 +41,7 @@ while [[ $# -gt 0 ]]; do
       use_ignore=false
       shift
       ;;
-    newton|jupiter|pipeline)
+    newton|jupiter|$personal)
       remote="$1"
       case "$remote" in
         newton)
@@ -44,11 +50,11 @@ while [[ $# -gt 0 ]]; do
         jupiter)
           projects=$JUPITER_PROJECTS
           ;;
-        pipeline)
+        $personal)
           projects=$LOCAL_PROJECTS
           ;;
         *)
-          echo "ERROR: Invalid remote '$1'. Must be 'newton', 'jupiter', or 'pipeline'."
+          echo "ERROR: Invalid remote '$1'. Must be newton, jupiter, or $personal."
           usage
           ;;
       esac
