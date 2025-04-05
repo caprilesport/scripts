@@ -49,6 +49,14 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "-c",
+        "--crude",
+        action="store_true",
+        help="Print a crude formatted table",
+    )
+    
+
+    parser.add_argument(
         "-r",
         "--remove",
         type=float,
@@ -190,6 +198,11 @@ def main():
 
     if args.latex:
         generate_latex_table(populations, energy_dict, args.temperature)
+
+    elif args.crude:
+        for k,v in populations.items():
+            print(f"{Path(k).stem}\t","{:.2f}%\t".format(v * 100), "{:.3f} kcal/mol\t".format(energy_dict[k]), "{}".format(count))
+            count += 1
 
     else:
         for k, v in populations.items():
