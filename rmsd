@@ -20,9 +20,7 @@ PYTHON_PATH = "/home/vport/projects/scripts/.venv/bin/python"
 SCRIPT_PATH = "/home/vport/projects/scripts/calculate_rmsd"
 CHEMCRAFT_PATH = "/home/vport/.wine/drive_c/chemcraft/Chemcraft.exe"
 
-
 CACHE_FILE = ".rmsd"
-
 
 class InvalidXYZfile(Exception):
     pass
@@ -154,7 +152,10 @@ def clean_file(file, rmsds):
         os.remove(filename)
 
 
-def generate_rmsd_list(cache, files):
+def generate_rmsd_list(cache: list[Rmsd], files):
+
+    rmsds = []
+
     for idx1 in range(0, len(files)):
         file_1 = files[idx1]
         for idx2 in range(idx1 + 1, len(files)):
@@ -163,11 +164,11 @@ def generate_rmsd_list(cache, files):
             obj = Rmsd(file_1, file_2, None, None)
 
             if obj in cache:
-                pass
+                rmsds.append(cache[cache.index(obj)])
             else:
-                cache.append(obj)
+                rmsds.append(obj)
 
-    return cache
+    return rmsds
 
 
 def gen_rich_table(rmsds, tolerance):
@@ -180,9 +181,9 @@ def gen_rich_table(rmsds, tolerance):
     for obj in rmsds:
         if tolerance is not None:
             if obj.rmsd < tolerance:
-                table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.3f}".format(obj.weighted))
+                table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.2f}%".format(obj.weighted * 100))
         else:
-            table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.3f}".format(obj.weighted))
+            table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.2f}%".format(obj.weighted * 100))
 
     return table
 
