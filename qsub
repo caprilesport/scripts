@@ -60,9 +60,9 @@ case "$remote" in
     cluster="jupiter"
     remote_dir="/scratch/vport/projects/"
     if [[ -n "$queue_name" ]]; then
-      job_command="qorca -q $queue_name $job_file"
+      job_command="qorca6 -q $queue_name $job_file"
     else
-      job_command="qorca $job_file"
+      job_command="qorca6 $job_file"
     fi
     ;;
   pipeline)
