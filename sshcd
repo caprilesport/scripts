@@ -12,13 +12,19 @@ usage() {
   exit 1
 }
 
+if [[ $(hostname) == "trindatimes" ]]; then
+  personal="pipeline"
+else
+  personal="trindatimes"
+fi
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
       usage
       ;;
-    newton|jupiter|trindatimes)
+    newton|jupiter|$personal)
       cluster="$1"
       case "$cluster" in
         newton)
@@ -29,12 +35,12 @@ while [[ $# -gt 0 ]]; do
           remote_dir=$JUPITER_PROJECTS
           remote_shell="bash"
           ;;
-        trindatimes)
+        $personal)
           remote_dir=$LOCAL_PROJECTS
           remote_shell="zsh"
           ;;
         *)
-          echo "ERROR: Invalid cluster '$1'. Must be 'newton', 'jupiter', or 'trindatimes'."
+          echo "ERROR: Invalid cluster '$1'. Must be 'newton', 'jupiter', or '$personal'."
           usage
           ;;
       esac

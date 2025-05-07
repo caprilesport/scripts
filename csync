@@ -8,12 +8,11 @@
 
 # This is heavily inspired by Prof. Dr. Leandro Martinez's script (https://github.com/lmiq/tips/blob/master/GoogleDrive/gdrive)
 # You can also create a .remoteignore file to exclude any file from syncing.
-if [[ $HOST == "trindatimes" ]]; then
+if [[ $(hostname) == "trindatimes" ]]; then
   personal="pipeline"
 else
   personal="trindatimes"
 fi
-
 
 usage() {
   echo "Usage: $0 [remote] [action] [sync/check] [options]"
