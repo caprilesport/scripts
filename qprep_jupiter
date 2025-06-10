@@ -1,0 +1,155 @@
+#!/bin/bash
+
+# Enable colors in Bash
+RED="\e[31m"
+ENDCOLOR="\e[0m"
+GREEN="\e[32m"
+BLUE="\e[34m"
+
+# Function to display help message
+function display_help {
+    echo -e ""
+    echo -e "			Welcome to ${BLUE}<GE|Ê|MM>${ENDCOLOR}!!"
+    echo -e ""
+    echo -e "Script for submitting jobs to the Orca software."
+    echo -e "The maximum number of processors and memory depend on the queue."
+    echo -e ""
+    echo -e "Usage:"
+    echo -e "qorca [-q ${GREEN}queue${ENDCOLOR}] basename.inp"
+    echo -e "qorca [--queue ${GREEN}queue${ENDCOLOR}] basename.inp"
+    echo -e ""
+    echo -e "Queues:"
+    echo -e "${GREEN}big${ENDCOLOR} - max 16 processors, 28gb memory"
+    echo -e "${GREEN}small${ENDCOLOR} - max 8 processors, 19gb memory  -> the default queue"
+    exit 0
+}
+
+# Default queue
+queue="small"
+
+# Parse command line arguments
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        -q|--queue) queue="$2"; shift ;;
+        -h|--help) display_help ;;
+        *) input_file="$1" ;;
+    esac
+    shift
+done
+
+# Check the input
+if [ -z "$input_file" ]; then
+    echo -e "${RED}ERROR:${ENDCOLOR} one input file is required, exiting..."
+    exit 2
+fi
+
+# Check the current directory
+if [[ $PWD == /home/* ]]; then
+    echo -e "${RED}ERROR:${ENDCOLOR} script cannot be run from /home/$USER/..."
+    echo -e "Script must be run from /scratch/$USER/, exiting ..."
+    exit 2
+fi
+
+# Set variable to remove the .inp
+job=${input_file%.*}
+
+# Get the number of processors
+if grep -qEi '^!.*PAL[0-9]+' "$input_file"; then
+    nprocs=$(grep -Eoi 'PAL[0-9]+' "$input_file" | grep -Eo '[0-9]+')
+    nodes=$nprocs
+elif grep -qEi 'nprocs[ ]*[0-9]+' "$input_file"; then
+    nprocs=$(grep -Eoi 'nprocs[ ]*[0-9]+' "$input_file" | grep -Eo '[0-9]+')
+    nodes=$nprocs
+else
+    echo -e "${RED}ERROR:${ENDCOLOR} please specify the number of procs in your input"
+    echo -e "This can be done with the following block:"
+    echo -e "${GREEN}%pal"
+    echo -e "  nprocs X"
+    echo -e "end${ENDCOLOR}"
+    echo -e "exiting..."
+    exit 2
+fi
+
+# Validate the number of processors based on the queue
+if [[ "$queue" == "small" ]]; then
+    max_procs=8
+else
+    max_procs=16
+fi
+
+if [[ $nprocs -gt $max_procs ]]; then
+    echo -e "${RED}ERROR:${ENDCOLOR} job with the wrong number of procs for submission, exiting..."
+    exit 2
+fi
+
+# Get the amount of memory
+if grep -qEi 'maxcore[ ]*[0-9]+' "$input_file"; then
+    maxcore=$(grep -Ei 'maxcore[ ]*[0-9]+' "$input_file" | grep -Eo '[0-9]+')
+    memory=$(((maxcore * nodes) / 1000))
+else
+    if [[ "$queue" == "small" ]]; then
+        memory=$(((1375 * nodes) / 1000))
+    else
+        memory=$(((1750 * nodes) / 1000))
+    fi
+fi
+
+# Validate the amount of memory based on the queue
+if [[ "$queue" == "small" ]]; then
+    max_memory=19
+else
+    max_memory=28
+fi
+
+if [[ $memory -gt $max_memory ]]; then
+    echo -e "${RED}ERROR:${ENDCOLOR} job with the wrong amount of memory for submission, exiting..."
+    exit 2
+fi
+
+# Checking the allocated resources
+echo "Total procs allocated: $nodes"
+echo "Total memory allocated: $memory gb"
+echo "Queue submitted: $queue"
+
+# Create a job script for the PBS scheduler
+cat > "$job.job" <<EOF
+#!/bin/bash
+#PBS -l nodes=1:ppn=${nodes}
+#PBS -l walltime=384:00:00
+#PBS -l mem=${memory}gb
+#PBS -V 
+#PBS -q $queue
+
+shopt -s extglob
+
+JOB_ID=\${PBS_JOBID%.*}
+
+export RSH_COMMAND="/usr/bin/ssh -x"
+
+# temporary directory
+export TDIR=/rascunho/\${USER}-\${PBS_JOBID}
+mkdir -p \${TDIR}
+
+cp \${PBS_O_WORKDIR}/${job}.inp \${TDIR}
+for f in \${PBS_O_WORKDIR}/*.gbw \${PBS_O_WORKDIR}/*.xyz \${PBS_O_WORKDIR}/*.hess \${PBS_O_WORKDIR}/*.res.*; do cp \$f \${TDIR}; done
+
+cd \${TDIR}
+
+# Log the job start details
+echo "start of job:" \`date\` > \${PBS_O_WORKDIR}/${job}.job.\${JOB_ID}
+echo "Job started from \${PBS_O_HOST}, running on \$(hostname) in \${PBS_O_WORKDIR} " >> \${PBS_O_WORKDIR}/${job}.job.\${JOB_ID}
+echo "temporary directory: \${TDIR}" >> \${PBS_O_WORKDIR}/${job}.job.\${JOB_ID}
+
+# run
+/home/Softwares/orca6.0.0/orca $job.inp > \${PBS_O_WORKDIR}/$job.out || true
+
+echo "final of job:" \`date\` >> \$PBS_O_WORKDIR/${job}.job.\$JOB_ID
+
+# copy the archives from temporary directory to submit directory
+mv /rascunho/\${USER}-\${PBS_JOBID}/!(*tmp*) \${PBS_O_WORKDIR}/ 
+rm -rf /rascunho/\${USER}-\${PBS_JOBID}
+EOF
+
+# Submit the job to the PBS scheduler
+qsub "${job}.job"
+

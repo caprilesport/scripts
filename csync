@@ -40,11 +40,11 @@ while [[ $# -gt 0 ]]; do
       use_ignore=false
       shift
       ;;
-    newton|jupiter|$personal)
+    loboc|jupiter|$personal)
       remote="$1"
       case "$remote" in
-        newton)
-          projects=$NEWTON_PROJECTS
+        loboc)
+          projects=$LOBOC_PROJECTS
           ;;
         jupiter)
           projects=$JUPITER_PROJECTS

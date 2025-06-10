@@ -23,11 +23,13 @@ shift
 # Default value for the number of jobs
 NUM_JOBS=20
 
-# Parse optional arguments
-while getopts ":n:" opt; do
+while getopts ":n:c:" opt; do
   case $opt in
     n)
       NUM_JOBS="$OPTARG"
+      ;;
+    c)
+      CLUSTER="$OPTARG"
       ;;
     \?)
       echo "Invalid option: -$OPTARG" >&2
@@ -43,11 +45,25 @@ done
 # Shift to the next argument after the options
 shift $((OPTIND - 1))
 
+# Process --cluster if present
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cluster)
+      CLUSTER="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+
 # Assign the remaining argument (if any) to SEARCH_STRING
 SEARCH_STRING="${1:-}"
 
 # Fetch JSON data and process it with jq
-qsjs jupiter | jq --arg status "$STATUS" --argjson num_jobs "$NUM_JOBS" --arg search_string "$SEARCH_STRING" '
+qsjs $CLUSTER | jq --arg status "$STATUS" --argjson num_jobs "$NUM_JOBS" --arg search_string "$SEARCH_STRING" '
   .jobs |
   map(select(
     .status == $status and 

@@ -22,6 +22,9 @@ def main():
     parser.add_argument(
         "interp_file", type=argparse.FileType("r"), default="-"
     )
+    parser.add_argument(
+        "use_hartree", type=argparse.FileType("r"), default="-"
+    )
     parser.add_argument("-a", "--all", action="store_true")
     args = parser.parse_args()
 
@@ -75,7 +78,7 @@ def main():
             plt.plot(interps[i, :, 1], interps[i, :, 2], "--", label=i)
 
     plt.plot(images[-1, :, 1], images[-1, :, 2], "ok")
-    plt.plot(interps[-1, :, 1], interps[-1, :, 2], "--", label=-1)
+    plt.plot(interps[-1, :, 1], interps[-1, :, 2], "--", label="last iter")
 
     plt.xlabel("Distance  (Bohr)")
     plt.ylabel("Energy (Eh)")

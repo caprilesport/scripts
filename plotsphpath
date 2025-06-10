@@ -1,0 +1,26 @@
+#!/home/vport/projects/scripts/.venv/bin/python
+import sys
+import matplotlib.pyplot as plt
+
+files = sys.argv[1:]
+
+gibbs_energies = []
+
+for file in files:
+    with open(file, "r") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        if "total free energy" in line:
+            gibbs_energies.append(float(line.strip().split()[-3]))
+
+
+gibbs_relative = [(i - min(gibbs_energies)) * 625.5 for i in gibbs_energies]
+print(gibbs_energies, gibbs_relative)
+x = [i for i in range(0, len(gibbs_relative))]
+
+
+plt.plot(x,gibbs_relative)
+plt.show()
+
+
