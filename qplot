@@ -1,0 +1,301 @@
+#!/usr/bin/env -S uv run --script
+
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "matplotlib",
+#     "numpy",
+#     "scipy",
+# ]
+# ///
+
+import argparse
+import sys
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.interpolate import make_interp_spline
+from scipy.constants import calorie, kilo, N_A, physical_constants
+
+hartree, _, _ = physical_constants["Hartree energy"]
+
+
+def plot_irc(files):
+    """Plot IRC data from one or more files."""
+    for file_path in files:
+        try:
+            with open(file_path, "r") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            print(f"Error: File not found at {file_path}", file=sys.stderr)
+            continue
+
+        start = 0
+        end = 0
+
+        for i, line in enumerate(lines):
+            if "IRC PATH SUMMARY" in line:
+                start = i + 5
+            if "SUGGESTED CITATIONS FOR THIS RUN" in line:
+                end = i - 3
+            if "Timings for individual modules" in line and end == 0:
+                end = i - 2
+
+        if start == 0 or end == 0:
+            print(
+                f"Warning: IRC path summary not found in {file_path}", file=sys.stderr
+            )
+            continue
+
+        data = lines[start:end]
+        y = []
+        counter = 0
+        ts = -1
+        for line in data:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            if "TS" in line:
+                ts = counter
+            try:
+                y.append(float(parts[2]))
+                counter += 1
+            except (ValueError, IndexError):
+                print(
+                    f"Warning: Could not parse line in {file_path}: {line.strip()}",
+                    file=sys.stderr,
+                )
+                continue
+
+        if not y:
+            print(
+                f"Warning: No data points found for IRC in {file_path}", file=sys.stderr
+            )
+            continue
+
+        y = [j - min(y) for j in y]
+        x = range(1, len(y) + 1)
+
+        xy_spline = make_interp_spline(x, y)
+        xsmooth = np.linspace(min(x), max(x), 500)
+        ysmooth = xy_spline(xsmooth)
+
+        (line,) = plt.plot(xsmooth, ysmooth, "-.", label=file_path)
+        plt.plot(x, y, "o", color=line.get_color())
+        if ts != -1:
+            plt.plot(x[ts], y[ts], "o", color="red")
+
+    plt.xlabel("IRC Point")
+    plt.ylabel("Relative Energy (kcal/mol)")
+    plt.title("IRC Profile")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+def plot_neb(files, show_all_iterations):
+    """Plot NEB data from one or more files."""
+    for file_path in files:
+        try:
+            with open(file_path, "r") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            print(f"Error: File not found at {file_path}", file=sys.stderr)
+            continue
+
+        all_images = []
+        all_interps = []
+        image = []
+        interp = []
+        mode = None
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            fields = line.split()
+            if fields[0] == "Iteration:":
+                if image:
+                    all_images.append(np.array(image))
+                    all_interps.append(np.array(interp))
+                image = []
+                interp = []
+                mode = None
+            elif fields[0] == "Images:":
+                mode = "images"
+            elif fields[0] == "Interp.:":
+                mode = "interps"
+            else:
+                try:
+                    if mode == "images":
+                        image.append([float(entry) for entry in fields])
+                    elif mode == "interps":
+                        interp.append([float(entry) for entry in fields])
+                except ValueError:
+                    print(
+                        f"Warning: Could not parse line in {file_path}: {line.strip()}",
+                        file=sys.stderr,
+                    )
+
+        if image:
+            all_images.append(np.array(image))
+            all_interps.append(np.array(interp))
+
+        if not all_images:
+            print(f"Warning: No NEB data found in {file_path}", file=sys.stderr)
+            continue
+
+        images = np.array(all_images)
+        interps = np.array(all_interps)
+
+        i_max = images[-1, :, 2].argmax()
+        forward_barrier = images[-1, i_max, 2] - images[-1, 0, 2]
+        backward_barrier = images[-1, i_max, 2] - images[-1, -1, 2]
+
+        print(f"--- Results for {file_path} ---")
+        print(
+            f"Barrier is at the {i_max + 1}th image (out of {len(images[-1, :, 2])})."
+        )
+        print(
+            f"Forward barrier : {forward_barrier:6.4f} Eh "
+            f"({forward_barrier * hartree * N_A / kilo:5.1f} kJ/mol, "
+            f"{forward_barrier * hartree * N_A / (kilo * calorie):5.1f} kcal/mol)"
+        )
+        print(
+            f"Backward barrier: {backward_barrier:6.4f} Eh "
+            f"({backward_barrier * hartree * N_A / kilo:5.1f} kJ/mol, "
+            f"{backward_barrier * hartree * N_A / (kilo * calorie):5.1f} kcal/mol)"
+        )
+        print("-" * (20 + len(file_path)))
+
+        if show_all_iterations:
+            min_energy = np.min(images[:, :, 2])
+        else:
+            min_energy = np.min(images[-1, :, 2])
+
+        if show_all_iterations:
+            for i in range(len(images) - 1):
+                plt.plot(images[i, :, 1], images[i, :, 2] - min_energy, "ok")
+                plt.plot(
+                    interps[i, :, 1],
+                    interps[i, :, 2] - min_energy,
+                    "--",
+                    label=f"{file_path} iter {i+1}",
+                )
+
+        (line,) = plt.plot(
+            interps[-1, :, 1],
+            interps[-1, :, 2] - min_energy,
+            "--",
+            label=f"{file_path} (final)",
+        )
+        plt.plot(
+            images[-1, :, 1], images[-1, :, 2] - min_energy, "o", color=line.get_color()
+        )
+
+    plt.xlabel("Distance (Bohr)")
+    plt.ylabel("Energy (Eh)")
+    plt.title("NEB Profile")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+def plot_scan(files):
+    """Plot scan data from one or more files."""
+    for file_path in files:
+        try:
+            with open(file_path, "r") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            print(f"Error: File not found at {file_path}", file=sys.stderr)
+            continue
+
+        start = 0
+        end = 0
+
+        for i, line in enumerate(lines):
+            if "The Calculated Surface using the 'Actual Energy'" in line:
+                start = i + 1
+            if "The Calculated Surface using the SCF energy" in line:
+                end = i - 1
+
+        if start == 0:
+            print(f"Warning: Scan data not found in {file_path}", file=sys.stderr)
+            continue
+
+        if end == 0:
+            end = len(lines)
+
+        data = lines[start:end]
+        x = []
+        y = []
+
+        for line in data:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            try:
+                x.append(float(parts[0]))
+                y.append(float(parts[1]))
+            except (ValueError, IndexError):
+                print(
+                    f"Warning: Could not parse line in {file_path}: {line.strip()}",
+                    file=sys.stderr,
+                )
+                continue
+
+        if not x or not y:
+            print(
+                f"Warning: No data points found for Scan in {file_path}",
+                file=sys.stderr,
+            )
+            continue
+
+        if x[-1] < x[0]:
+            x.reverse()
+            y.reverse()
+
+        y = [(j - min(y)) * hartree * N_A / (kilo * calorie) for j in y]
+
+        xy_spline = make_interp_spline(x, y)
+        xsmooth = np.linspace(min(x), max(x), 500)
+        ysmooth = xy_spline(xsmooth)
+
+        (line,) = plt.plot(xsmooth, ysmooth, "-.", label=file_path)
+        plt.plot(x, y, "o", color=line.get_color())
+
+    plt.xlabel("Coordinate")
+    plt.ylabel("Relative Energy (kcal/mol)")
+    plt.title("Scan Profile")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+def main() -> None:
+    """Main function."""
+    parser = argparse.ArgumentParser(description="Plot data from one or more files.")
+    parser.add_argument("files", nargs="+", help="One or more files to plot.")
+    parser.add_argument("--irc", action="store_true", help="Plot IRC data.")
+    parser.add_argument("--scan", action="store_true", help="Plot scan data.")
+    parser.add_argument("--neb", action="store_true", help="Plot NEB data.")
+    parser.add_argument(
+        "-a", "--all", action="store_true", help="For NEB, plot all iterations."
+    )
+
+    args = parser.parse_args()
+
+    if not (args.irc or args.scan or args.neb):
+        parser.error("No plot type specified. Please use --irc, --scan, or --neb.")
+
+    if args.irc:
+        plot_irc(args.files)
+    if args.neb:
+        plot_neb(args.files, args.all)
+    if args.scan:
+        plot_scan(args.files)
+
+
+if __name__ == "__main__":
+    main()
