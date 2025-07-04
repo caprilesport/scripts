@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add the script's directory to the Python path to allow importing local scripts
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+# import calculate_rmsd
 
 from calculate_rmsd import get_rmsd_from_files
 
@@ -35,6 +36,7 @@ from calculate_rmsd import get_rmsd_from_files
 CHEMCRAFT_PATH = "/home/vport/.wine/drive_c/chemcraft/Chemcraft.exe"
 
 CACHE_FILE = ".rmsd"
+
 
 class InvalidXYZfile(Exception):
     pass
@@ -60,18 +62,22 @@ class Rmsd:
     def __len__(self):
         with open(self.file1) as f:
             try:
-                len1=int(f.readlines()[0])
+                len1 = int(f.readlines()[0])
             except:
                 raise InvalidXYZfile("{} is an invalid xyz file".format(self.file1))
 
         with open(self.file2) as f:
             try:
-                len2=int(f.readlines()[0])
+                len2 = int(f.readlines()[0])
             except:
                 raise InvalidXYZfile("{} is an invalid xyz file".format(self.file2))
 
         if len1 != len2:
-            raise AtomNrMismatch("{} and {} do not have a compatible number of atoms".format(self.file1, self.file2))
+            raise AtomNrMismatch(
+                "{} and {} do not have a compatible number of atoms".format(
+                    self.file1, self.file2
+                )
+            )
 
         return len1
 
@@ -79,7 +85,7 @@ class Rmsd:
         if self.rmsd is None:
             return 0
         else:
-            return (self.rmsd/len(self)) 
+            return self.rmsd / len(self)
 
     def calculate_rmsd(self):
         if self.rmsd is None:
@@ -88,11 +94,13 @@ class Rmsd:
                 self.rmsd = rmsd_val
                 self.weighted = self.rmsd / num_atoms if num_atoms > 0 else 0
             except (ValueError, FileNotFoundError) as e:
-                print(f"Error calculating RMSD for {self.file1} and {self.file2}: {e}", file=sys.stderr)
+                print(
+                    f"Error calculating RMSD for {self.file1} and {self.file2}: {e}",
+                    file=sys.stderr,
+                )
                 self.rmsd = None
                 self.weighted = None
         return self
-
 
     def view(self):
         file1 = ["wine", CHEMCRAFT_PATH, self.file1]
@@ -182,7 +190,7 @@ def generate_rmsd_list(cache: list[Rmsd], files):
                 cached_obj = cache[cache.index(obj)]
                 # Ensure cached objects have values if they are meant to be calculated
                 if cached_obj.rmsd is None:
-                    rmsds.append(obj) # Add the new object to be calculated
+                    rmsds.append(obj)  # Add the new object to be calculated
                 else:
                     rmsds.append(cached_obj)
             else:
@@ -199,12 +207,23 @@ def gen_rich_table(rmsds, tolerance):
     table.add_column("Weighted RMSD", justify="center")
 
     for obj in rmsds:
-        if obj.rmsd is None: continue
+        if obj.rmsd is None:
+            continue
         if tolerance is not None:
             if obj.rmsd < tolerance:
-                table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.2f}%".format(obj.weighted * 100))
+                table.add_row(
+                    obj.file1,
+                    obj.file2,
+                    "{:.3f}".format(obj.rmsd),
+                    "{:.2f}%".format(obj.weighted * 100),
+                )
         else:
-            table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.2f}%".format(obj.weighted * 100))
+            table.add_row(
+                obj.file1,
+                obj.file2,
+                "{:.3f}".format(obj.rmsd),
+                "{:.2f}%".format(obj.weighted * 100),
+            )
 
     return table
 
@@ -212,7 +231,8 @@ def gen_rich_table(rmsds, tolerance):
 def ask_view_pair(rmsds, tolerance):
     rmsd_choices = []
     for obj in rmsds:
-        if obj.rmsd is None: continue
+        if obj.rmsd is None:
+            continue
         if tolerance is not None:
             if obj.rmsd < tolerance:
                 rmsd_choices.append(obj)
@@ -220,8 +240,7 @@ def ask_view_pair(rmsds, tolerance):
             rmsd_choices.append(obj)
 
     string_choices = [
-        f"file1: {i.file1}, file2: {i.file2}, rmsd: {i.rmsd:.3f}"
-        for i in rmsd_choices
+        f"file1: {i.file1}, file2: {i.file2}, rmsd: {i.rmsd:.3f}" for i in rmsd_choices
     ]
 
     choice = inquirer.fuzzy(
@@ -247,7 +266,9 @@ if __name__ == "__main__":
         with Progress() as progress:
             task = progress.add_task("[cyan]Calculating RMSD...", total=total_tasks)
             with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                futures = {executor.submit(obj.calculate_rmsd): obj for obj in to_calculate}
+                futures = {
+                    executor.submit(obj.calculate_rmsd): obj for obj in to_calculate
+                }
 
                 for future in as_completed(futures):
                     result = future.result()
@@ -258,7 +279,7 @@ if __name__ == "__main__":
 
         if args.remove:
             print(f"Removing {len(filtered)} files with RMSD < {args.tolerance}...")
-            for file in set(filtered): # Use set to remove duplicates
+            for file in set(filtered):  # Use set to remove duplicates
                 clean_file(file, all_rmsds)
 
         with open(CACHE_FILE, "w") as c:
@@ -270,7 +291,9 @@ if __name__ == "__main__":
             json.dump(all_rmsds, c, default=lambda o: o.__dict__, indent=4)
         sys.exit(1)
 
-    all_rmsds.sort(key=lambda x: x.rmsd if x.rmsd is not None else float('inf'), reverse=True)
+    all_rmsds.sort(
+        key=lambda x: x.rmsd if x.rmsd is not None else float("inf"), reverse=True
+    )
     table = gen_rich_table(all_rmsds, args.tolerance)
     console = Console()
     console.print(table)
