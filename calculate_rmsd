@@ -1701,8 +1701,84 @@ def get_coordinates_xyz(
     return atoms, V
 
 
+def get_rmsd_from_files(
+    structure_a_path: str, structure_b_path: str
+) -> tuple[float, int]:
+    """
+    Calculates the RMSD between two structures given their file paths.
+    This function is designed to be imported and used by other scripts.
+    It uses default settings: hungarian reordering and kabsch rotation.
+    Returns a tuple of (rmsd, number_of_atoms).
+    """
+
+    # Determine file format
+    path_a = Path(structure_a_path)
+    suffixes_a = path_a.suffixes
+    is_gzip_a = ".gz" in suffixes_a
+    if not suffixes_a:
+        format_a = None
+    elif is_gzip_a and len(suffixes_a) > 1:
+        format_a = suffixes_a[-2].strip(".")
+    elif not is_gzip_a:
+        format_a = suffixes_a[-1].strip(".")
+    else:
+        format_a = None
+
+    path_b = Path(structure_b_path)
+    suffixes_b = path_b.suffixes
+    is_gzip_b = ".gz" in suffixes_b
+    if not suffixes_b:
+        format_b = None
+    elif is_gzip_b and len(suffixes_b) > 1:
+        format_b = suffixes_b[-2].strip(".")
+    elif not is_gzip_b:
+        format_b = suffixes_b[-1].strip(".")
+    else:
+        format_b = None
+
+    p_all_atoms, p_all = get_coordinates(
+        path_a,
+        format_a,
+        is_gzip=is_gzip_a,
+        return_atoms_as_int=True,
+    )
+
+    q_all_atoms, q_all = get_coordinates(
+        path_b,
+        format_b,
+        is_gzip=is_gzip_b,
+        return_atoms_as_int=True,
+    )
+
+    p_size = p_all.shape[0]
+    q_size = q_all.shape[0]
+
+    if not p_size == q_size:
+        raise ValueError(f"Structures not same size: {p_size} vs {q_size}")
+
+    p_coord = copy.deepcopy(p_all)
+    q_coord = copy.deepcopy(q_all)
+    p_atoms = copy.deepcopy(p_all_atoms)
+    q_atoms = copy.deepcopy(q_all_atoms)
+
+    # Recenter to centroid
+    p_cent = centroid(p_coord)
+    q_cent = centroid(q_coord)
+    p_coord -= p_cent
+    q_coord -= q_cent
+
+    # Reorder using hungarian method (default for --reorder)
+    view = reorder_hungarian(p_atoms, q_atoms, p_coord, q_coord)
+    q_coord = q_coord[view]
+
+    # Calculate RMSD using Kabsch algorithm (default rotation)
+    result_rmsd = kabsch_rmsd(p_coord, q_coord)
+
+    return result_rmsd, p_size
+
+
 def parse_arguments(
-    arguments: Optional[Union[str, List[str]]] = None
+    arguments: Optional[Union[str, List[str]]] = None,
 ) -> argparse.Namespace:
 
     description = __doc__
