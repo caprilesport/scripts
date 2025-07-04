@@ -1,0 +1,340 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "typer",
+# ]
+# ///
+
+import re
+import subprocess
+import typer
+from pathlib import Path
+import os
+import sys
+
+# --- Cluster Configurations ---
+CLUSTER_CONFIG = {
+    "jupiter": {
+        "scheduler": "pbs",
+        "orca_path": "/home/Softwares/orca5.0.3/orca",
+        "queues": {
+            "small": {"max_procs": 8, "default_mem_per_proc": 1375},
+            "big": {"max_procs": 16, "default_mem_per_proc": 1875},
+        },
+        "default_queue": "small",
+        "walltime": "720:00:00",
+        "submission_command": "qsub",
+        "forbidden_path_prefix": f"/home/{os.environ.get('USER')}",
+    },
+    "loboc": {
+        "scheduler": "pbs",
+        "orca_path": "/home/users/vport/bin/orca_5_0_4/orca",
+        "default_walltime": "60:00:00",
+        "submission_command": "qsub",
+        "modules": ["gcc/11.2.0", "openmpi-gnu/4.1.1"],
+    },
+    "newton": {
+        "scheduler": "slurm",
+        "orca_paths": {
+            "5": "/opt/orca/orca-5.0.4/orca",
+            "6": "/opt/orca/orca-6.1.0/orca",
+        },
+        "default_orca_version": "6",
+        "walltime": "3-00:00:00",
+        "partition": "long",
+        "submission_command": "sbatch",
+        "modules": ["fermi/openmpi-4.1.6"],
+    },
+    "pipeline": {
+        "default_orca_version": "5",
+        "submission_command": "source",
+    },
+}
+
+# --- Job Script Templates ---
+
+PBS_JUPITER_TEMPLATE = """#!/bin/bash
+#PBS -l nodes=1:ppn={nprocs}
+#PBS -l walltime={walltime}
+#PBS -l mem={memory_gb}gb
+#PBS -V
+#PBS -q {queue}
+
+shopt -s extglob
+
+JOB_ID=${{PBS_JOBID%.*}}
+
+export RSH_COMMAND="/usr/bin/ssh -x"
+
+# temporary directory
+export TDIR=/rascunho/${{USER}}-${{PBS_JOBID}}
+mkdir -p ${{TDIR}}
+
+cp ${{PBS_O_WORKDIR}}/{input_filename} ${{TDIR}}
+for f in ${{PBS_O_WORKDIR}}/*.gbw ${{PBS_O_WORKDIR}}/*.xyz ${{PBS_O_WORKDIR}}/*.hess ${{PBS_O_WORKDIR}}/*.res.*; do cp $f ${{TDIR}}; done
+
+cd ${{TDIR}}
+
+# Log the job start details
+echo "start of job:" `date` > ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+echo "Job started from ${{PBS_O_HOST}}, running on $(hostname) in ${{PBS_O_WORKDIR}} " >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+echo "temporary directory: ${{TDIR}}" >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+
+# run
+{orca_path} {input_filename} > ${{PBS_O_WORKDIR}}/{input_stem}.out || true
+
+echo "final of job:" `date` >> $PBS_O_WORKDIR/{job_name}.job.$JOB_ID
+
+# copy the archives from temporary directory to submit directory
+mv /rascunho/${{USER}}-${{PBS_JOBID}}/!(*tmp*) ${{PBS_O_WORKDIR}}/
+rm -rf /rascunho/${{USER}}-${{PBS_JOBID}}
+"""
+
+PBS_LOBOC_TEMPLATE = """#!/bin/bash
+#PBS -l select=1:ncpus={nprocs}:mpiprocs={nprocs}
+#PBS -l walltime={walltime}
+#PBS -V
+
+module load {modules}
+
+JOB_ID=${{PBS_JOBID%.*}}
+
+# Log the job start details
+echo "start of job:" `date` > ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+echo "Job started from ${{PBS_O_HOST}}, running on $(hostname) in ${{PBS_O_WORKDIR}} " >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+
+# Run the Orca job
+{orca_path} $PBS_O_WORKDIR/{input_filename} > $PBS_O_WORKDIR/{input_stem}.out || true
+
+echo "final of job:" `date` >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+"""
+
+SLURM_NEWTON_TEMPLATE = """#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH -o slurm.%j.out
+#SBATCH -e slurm.%j.err
+#SBATCH -N 1
+#SBATCH --ntasks={nprocs}
+#SBATCH --mem={memory_mb}
+#SBATCH -t {walltime}
+#SBATCH --no-requeue
+#SBATCH -p {partition}
+
+module load {modules}
+
+echo "########################################################"
+echo "## ORCA Job Submission Script"
+echo "# Job name: {job_name}"
+echo "# ORCA version: {orca_version_label}"
+echo "# ORCA executable: {orca_exec}"
+echo "# Number of cores: {nprocs}"
+echo "# Total memory: {memory_mb} MB"
+echo "# Job started at: $(date)"
+echo "########################################################"
+
+{orca_exec} {input_filename} > {input_stem}.out
+
+echo "########################################################"
+echo "# ORCA job finished at: $(date)"
+echo "########################################################"
+"""
+
+app = typer.Typer(add_completion=False)
+
+
+def parse_orca_input(content: str) -> dict:
+    """Parses ORCA input file content to extract nprocs and maxcore."""
+    nprocs, maxcore = None, None
+
+    pal_match = re.search(r"^\s*!\s*.*PAL(\d+)", content, re.IGNORECASE | re.MULTILINE)
+    nprocs_match = re.search(
+        r"^\s*%pal\s*\n\s*nprocs\s+(\d+)", content, re.IGNORECASE | re.MULTILINE
+    )
+    nprocs_block_match = re.search(r"nprocs\s+(\d+)", content, re.IGNORECASE)
+    maxcore_match = re.search(r"maxcore\s+(\d+)", content, re.IGNORECASE)
+
+    if pal_match:
+        nprocs = int(pal_match.group(1))
+    elif nprocs_match:
+        nprocs = int(nprocs_match.group(1))
+    elif nprocs_block_match:
+        nprocs = int(nprocs_block_match.group(1))
+
+    if maxcore_match:
+        maxcore = int(maxcore_match.group(1))
+
+    return {"nprocs": nprocs, "maxcore": maxcore}
+
+
+@app.command()
+def main(
+    input_file: Path = typer.Argument(
+        ...,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        help="Path to the ORCA input file (.inp).",
+    ),
+    cluster: str = typer.Option(
+        ...,
+        "--cluster",
+        "-c",
+        help=f"Target cluster. Available: {list(CLUSTER_CONFIG.keys())}",
+    ),
+    queue: str = typer.Option(
+        None,
+        "--queue",
+        "-q",
+        help="Queue for submission (for PBS clusters like Jupiter).",
+    ),
+    walltime: str = typer.Option(
+        None,
+        "--walltime",
+        "-t",
+        help="Set the walltime (e.g., 48:00:00 or 2-00:00:00).",
+    ),
+    orca_version: str = typer.Option(
+        None, "--orca-version", help="ORCA version to use (for Newton)."
+    ),
+    use_dir_name: bool = typer.Option(
+        False, "--use-dir-name", help="Use directory name for the job name."
+    ),
+):
+    """
+    A generalized script to generate ORCA job files for different HPC clusters.
+    """
+    # --- Validation and Configuration ---
+    if cluster not in CLUSTER_CONFIG:
+        print(
+            f"Error: Cluster '{cluster}' not recognized. Available options: {list(CLUSTER_CONFIG.keys())}"
+        )
+        raise typer.Exit(code=1)
+
+    config = CLUSTER_CONFIG[cluster]
+
+    if use_dir_name:
+        current_dir = Path.cwd()
+        job_name = f"{current_dir.parent.name}_{current_dir.name}"
+    else:
+        job_name = input_file.stem
+
+    input_filename = input_file.name
+    input_stem = input_file.stem
+    content = input_file.read_text()
+
+    # --- Parse Input File ---
+    parsed_params = parse_orca_input(content)
+    nprocs = parsed_params.get("nprocs")
+    maxcore = parsed_params.get("maxcore")
+
+    if cluster != "pipeline" and not nprocs:
+        print(
+            "Error: Could not find the number of processors (nprocs or PAL) in the input file."
+        )
+        raise typer.Exit(code=1)
+
+    print(f"Job Name: {job_name}")
+    print(f"Cluster: {cluster}")
+    print(f"Processors (nprocs): {nprocs}")
+    if maxcore:
+        print(f"Memory per Core (maxcore): {maxcore} MB")
+
+    # --- Cluster-Specific Logic ---
+    job_script_content = ""
+
+    if cluster == "jupiter":
+        # Path validation
+
+        q = queue or config["default_queue"]
+        if q not in config["queues"]:
+            print(
+                f"Error: Queue '{q}' is not valid for Jupiter. Options: {list(config['queues'].keys())}"
+            )
+            raise typer.Exit(code=1)
+
+        if nprocs > config["queues"][q]["max_procs"]:
+            print(
+                f"Error: {nprocs} processors requested, but queue '{q}' only allows {config['queues'][q]['max_procs']}."
+            )
+            raise typer.Exit(code=1)
+
+        if maxcore:
+            memory_gb = (maxcore * nprocs) // 1000
+        else:
+            memory_gb = (config["queues"][q]["default_mem_per_proc"] * nprocs) // 1000
+
+        print(f"Queue: {q}")
+        print(f"Total Memory: {memory_gb} GB")
+
+        job_script_content = PBS_JUPITER_TEMPLATE.format(
+            nprocs=nprocs,
+            walltime=walltime or config["walltime"],
+            memory_gb=memory_gb,
+            queue=q,
+            job_name=job_name,
+            orca_path=config["orca_path"],
+            input_filename=input_filename,
+            input_stem=input_stem,
+        )
+
+    elif cluster == "loboc":
+        wt = walltime or config["default_walltime"]
+        print(f"Walltime: {wt}")
+        job_script_content = PBS_LOBOC_TEMPLATE.format(
+            nprocs=nprocs,
+            walltime=wt,
+            job_name=job_name,
+            orca_path=config["orca_path"],
+            modules=" ".join(config["modules"]),
+            input_filename=input_filename,
+            input_stem=input_stem,
+        )
+
+    elif cluster == "newton":
+        if not maxcore:
+            maxcore = 3750  # Default value
+            print(
+                f"Warning: 'maxcore' not found in input. Using default value: {maxcore} MB/core"
+            )
+
+        version = orca_version or config["default_orca_version"]
+        if version not in config["orca_paths"]:
+            print(
+                f"Error: ORCA version '{version}' is not supported on Newton. Options: {list(config['orca_paths'].keys())}"
+            )
+            raise typer.Exit(code=1)
+
+        orca_exec = config["orca_paths"][version]
+        orca_version_label = f"ORCA {version}"
+        total_mem_mb = nprocs * maxcore
+
+        print(f"ORCA Version: {orca_version_label}")
+        print(f"Total Memory: {total_mem_mb} MB")
+
+        job_script_content = SLURM_NEWTON_TEMPLATE.format(
+            job_name=job_name,
+            nprocs=nprocs,
+            memory_mb=total_mem_mb,
+            walltime=walltime or config["walltime"],
+            partition=config["partition"],
+            modules=" ".join(config["modules"]),
+            orca_version_label=orca_version_label,
+            orca_exec=orca_exec,
+            input_filename=input_filename,
+            input_stem=input_stem,
+        )
+
+    elif cluster == "pipeline":
+        version = orca_version or config["default_orca_version"]
+        job_script_content = f"pueue add -- /home/vport/projects/scripts/job -v {version} {input_filename}"
+
+    # --- Write Job Script ---
+    job_script_path = Path(f"{job_name}.job")
+    job_script_path.write_text(job_script_content)
+
+    print(f"Generated job script: {job_script_path}")
+
+
+if __name__ == "__main__":
+    app()
