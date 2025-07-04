@@ -20,15 +20,18 @@ from InquirerPy import inquirer
 
 import os
 import glob
-import subprocess
 import argparse
 import json
-import subprocess
 import operator
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Add the script's directory to the Python path to allow importing local scripts
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+
+from calculate_rmsd import get_rmsd_from_files
 
 
-PYTHON_PATH = "/home/vport/projects/scripts/.venv/bin/python"
-SCRIPT_PATH = "/home/vport/projects/scripts/calculate_rmsd"
 CHEMCRAFT_PATH = "/home/vport/.wine/drive_c/chemcraft/Chemcraft.exe"
 
 CACHE_FILE = ".rmsd"
@@ -80,23 +83,16 @@ class Rmsd:
 
     def calculate_rmsd(self):
         if self.rmsd is None:
-            command = f"{PYTHON_PATH} {SCRIPT_PATH} {self.file1} {self.file2} --reorder"
-            result = subprocess.run(command, shell=True, capture_output=True, text=True)
-            output = result.stdout.strip()
+            try:
+                rmsd_val, num_atoms = get_rmsd_from_files(self.file1, self.file2)
+                self.rmsd = rmsd_val
+                self.weighted = self.rmsd / num_atoms if num_atoms > 0 else 0
+            except (ValueError, FileNotFoundError) as e:
+                print(f"Error calculating RMSD for {self.file1} and {self.file2}: {e}", file=sys.stderr)
+                self.rmsd = None
+                self.weighted = None
+        return self
 
-            if output:
-                try:
-                    # Extrair o valor de RMSD do output
-                    rmsd = float(output.split()[-1])
-                except ValueError:
-                    print(f"Erro ao converter RMSD para float: {output}")
-                    rmsd = None
-            else:
-                print("Erro: Saída do cálculo do RMSD está vazia.")
-                rmsd = None
-
-            self.rmsd = rmsd
-            self.weighted = self.weighted_rmsd()
 
     def view(self):
         file1 = ["wine", CHEMCRAFT_PATH, self.file1]
