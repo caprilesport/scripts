@@ -1,4 +1,15 @@
-#!/home/vport/projects/scripts/.venv/bin/python
+#!/usr/bin/env -S uv run --script
+
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "rich",
+#     "InquirerPy",
+#     "numpy",
+#     "scipy",
+# ]
+# ///
+
 from rich.progress import Progress
 from rich.console import Console
 from rich.table import Table
