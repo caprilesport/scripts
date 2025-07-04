@@ -128,6 +128,14 @@ def handle_args():
     )
 
     parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of parallel workers to use for calculation.",
+    )
+
+    parser.add_argument(
         "files",
         nargs="+",
         help="List of xyz files (at least two are required), format is mandatory to be .xyz",
@@ -171,7 +179,12 @@ def generate_rmsd_list(cache: list[Rmsd], files):
             obj = Rmsd(file_1, file_2, None, None)
 
             if obj in cache:
-                rmsds.append(cache[cache.index(obj)])
+                cached_obj = cache[cache.index(obj)]
+                # Ensure cached objects have values if they are meant to be calculated
+                if cached_obj.rmsd is None:
+                    rmsds.append(obj) # Add the new object to be calculated
+                else:
+                    rmsds.append(cached_obj)
             else:
                 rmsds.append(obj)
 
@@ -186,6 +199,7 @@ def gen_rich_table(rmsds, tolerance):
     table.add_column("Weighted RMSD", justify="center")
 
     for obj in rmsds:
+        if obj.rmsd is None: continue
         if tolerance is not None:
             if obj.rmsd < tolerance:
                 table.add_row(obj.file1, obj.file2, "{:.3f}".format(obj.rmsd), "{:.2f}%".format(obj.weighted * 100))
@@ -198,14 +212,15 @@ def gen_rich_table(rmsds, tolerance):
 def ask_view_pair(rmsds, tolerance):
     rmsd_choices = []
     for obj in rmsds:
+        if obj.rmsd is None: continue
         if tolerance is not None:
             if obj.rmsd < tolerance:
                 rmsd_choices.append(obj)
         else:
-            rmsd_choices = rmsds
+            rmsd_choices.append(obj)
 
     string_choices = [
-        "file1: {}, file2: {}, rmsd: {}".format(i.file1, i.file2, i.rmsd)
+        f"file1: {i.file1}, file2: {i.file2}, rmsd: {i.rmsd:.3f}"
         for i in rmsd_choices
     ]
 
@@ -222,42 +237,48 @@ if __name__ == "__main__":
     args = handle_args()
     cache = load_cache()
 
-    rmsds = generate_rmsd_list(cache, args.files)
-
-    total_tasks = len(rmsds)
+    all_rmsds = generate_rmsd_list(cache, args.files)
+    to_calculate = [r for r in all_rmsds if r.rmsd is None]
+    total_tasks = len(to_calculate)
 
     filtered = []
 
     try:
         with Progress() as progress:
-            task = progress.add_task("", total=total_tasks)
-            for obj in rmsds:
-                obj.calculate_rmsd()
-                progress.update(task, advance=1)
-                if args.tolerance is not None:
-                    if obj.rmsd < args.tolerance:
-                        filtered.append(obj.file2)
+            task = progress.add_task("[cyan]Calculating RMSD...", total=total_tasks)
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = {executor.submit(obj.calculate_rmsd): obj for obj in to_calculate}
+
+                for future in as_completed(futures):
+                    result = future.result()
+                    progress.update(task, advance=1)
+                    if args.tolerance is not None and result.rmsd is not None:
+                        if result.rmsd < args.tolerance:
+                            filtered.append(result.file2)
 
         if args.remove:
-            for file in filtered:
-                clean_file(file, rmsds)
+            print(f"Removing {len(filtered)} files with RMSD < {args.tolerance}...")
+            for file in set(filtered): # Use set to remove duplicates
+                clean_file(file, all_rmsds)
 
         with open(CACHE_FILE, "w") as c:
-            json.dump(rmsds, c, default=lambda o: o.__dict__, indent=4)
+            json.dump(all_rmsds, c, default=lambda o: o.__dict__, indent=4)
 
     except KeyboardInterrupt:
+        print("\nCalculation interrupted. Saving cache...")
         with open(CACHE_FILE, "w") as c:
-            json.dump(rmsds, c, default=lambda o: o.__dict__, indent=4)
+            json.dump(all_rmsds, c, default=lambda o: o.__dict__, indent=4)
+        sys.exit(1)
 
-    rmsds.sort(key=operator.attrgetter('rmsd'), reverse = True)
-    table = gen_rich_table(rmsds, args.tolerance)
+    all_rmsds.sort(key=lambda x: x.rmsd if x.rmsd is not None else float('inf'), reverse=True)
+    table = gen_rich_table(all_rmsds, args.tolerance)
     console = Console()
     console.print(table)
 
     if args.view:
         another = True
         while another:
-            pair = ask_view_pair(rmsds, args.tolerance)
+            pair = ask_view_pair(all_rmsds, args.tolerance)
             pair.view()
 
             another = inquirer.confirm(
