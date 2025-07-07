@@ -201,8 +201,9 @@ def plot_neb(files, show_all_iterations):
     plt.show()
 
 
-def plot_scan(files):
+def plot_scan(files, relative):
     """Plot scan data from one or more files."""
+    reference = 0
     for file_path in files:
         try:
             with open(file_path, "r") as f:
@@ -256,7 +257,12 @@ def plot_scan(files):
             x.reverse()
             y.reverse()
 
-        y = [(j - min(y)) * hartree * N_A / (kilo * calorie) for j in y]
+        if relative:
+            y = [(j - min(y)) * hartree * N_A / (kilo * calorie) for j in y]
+        else:
+            if reference == 0:
+                reference = min(y)
+            y = [(j - reference) * hartree * N_A / (kilo * calorie) for j in y]
 
         xy_spline = make_interp_spline(x, y)
         xsmooth = np.linspace(min(x), max(x), 500)
@@ -283,6 +289,12 @@ def main() -> None:
     parser.add_argument(
         "-a", "--all", action="store_true", help="For NEB, plot all iterations."
     )
+    parser.add_argument(
+        "-r",
+        "--relative",
+        action="store_true",
+        help="deactivate relative energy plotting",
+    )
 
     args = parser.parse_args()
 
@@ -294,7 +306,7 @@ def main() -> None:
     if args.neb:
         plot_neb(args.files, args.all)
     if args.scan:
-        plot_scan(args.files)
+        plot_scan(args.files, args.relative)
 
 
 if __name__ == "__main__":
