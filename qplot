@@ -6,6 +6,7 @@
 #     "matplotlib",
 #     "numpy",
 #     "scipy",
+#     "pyqt6"
 # ]
 # ///
 
@@ -279,8 +280,53 @@ def plot_scan(files, relative):
     plt.show()
 
 
+def plot_stdin(data_lines):
+    """Plot data from stdin."""
+    y = []
+    for line in data_lines:
+        try:
+            y.append(float(line.strip()))
+        except ValueError:
+            print(
+                f"Warning: Could not parse line from stdin as a float: '{line.strip()}'",
+                file=sys.stderr,
+            )
+            continue
+
+    if not y:
+        print("Warning: No data points found from stdin", file=sys.stderr)
+        return
+
+    y = [(i - min(y)) * 627.5 for i in y]
+
+    x = range(1, len(y) + 1)
+
+    # Using spline interpolation for a smooth curve, like in other functions
+    # make_interp_spline needs at least k+1 points, default k=3
+    if len(y) > 3:
+        xy_spline = make_interp_spline(x, y)
+        xsmooth = np.linspace(min(x), max(x), 500)
+        ysmooth = xy_spline(xsmooth)
+        (line,) = plt.plot(xsmooth, ysmooth, "-.", label="stdin")
+    else:
+        (line,) = plt.plot(x, y, "-.", label="stdin")
+
+    plt.plot(x, y, "o", color=line.get_color())
+
+    plt.xlabel("Index")
+    plt.ylabel("Value")
+    plt.title("Data from stdin")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
 def main() -> None:
     """Main function."""
+    if not sys.stdin.isatty():
+        plot_stdin(sys.stdin.readlines())
+        return
+
     parser = argparse.ArgumentParser(description="Plot data from one or more files.")
     parser.add_argument("files", nargs="+", help="One or more files to plot.")
     parser.add_argument("--irc", action="store_true", help="Plot IRC data.")
