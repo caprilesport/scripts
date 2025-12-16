@@ -1,0 +1,37 @@
+#!/usr/bin/env -S uv run --script
+
+import os
+import sys
+
+
+def split_trj(trajectory_file: str):
+    """
+    Split a trajectory xyz file into multiple xyz files
+    """
+    with open(trajectory_file, "r") as f:
+        lines = f.readlines()
+
+    prefix = os.path.splitext(trajectory_file)[0] + "_"
+
+    atomnr = int(lines[0].replace("\n", ""))
+    lines_struc = atomnr + 2
+
+    nr_structs = int(len(lines) / lines_struc)
+    print(f"There are {nr_structs} structures that will be splitted")
+
+    digits = len(str(nr_structs))
+
+    for i in range(0, nr_structs):
+        filename = prefix + str(i).zfill(digits) + ".xyz"
+        cl = i * lines_struc
+        with open(filename, "w") as f:
+            f.writelines(lines[cl : cl + atomnr + 2])
+
+
+def main():
+    trajectory_file = sys.argv[1]
+    split_trj(trajectory_file)
+
+
+if __name__ == "__main__":
+    main()
