@@ -2,6 +2,7 @@
 import os
 import argparse
 
+from mylib.parsers import OrcaParser
 from InquirerPy import inquirer
 from glob import glob
 
@@ -14,12 +15,10 @@ DEFAULT_PRODUCT = "./prod-freq/init.out"
 
 
 def parse_arguments():
-    """
-    Parses command-line arguments for a script that processes ORCA log files to calculate
-    reaction barriers.
+    """Parses command-line arguments for a script that processes ORCA log files to
+    calculate reaction barriers.
 
-    Returns:
-        argparse.Namespace: Parsed arguments.
+    Returns:     argparse.Namespace: Parsed arguments.
     """
     parser = argparse.ArgumentParser(
         description="This script processes ORCA log files to calculate reaction barriers."
@@ -43,8 +42,7 @@ def parse_arguments():
 
 
 def is_orca_log(file: str):
-    """
-    Check if a file is an orca based on it's header
+    """Check if a file is an orca based on it's header.
 
     Returns: bool
     """
@@ -57,75 +55,34 @@ def is_orca_log(file: str):
 
 
 def get_files(extension_glob="*.out"):
-    """
-    Walks the current directory recursively, obtaining all the .out files
+    """Walks the current directory recursively, obtaining all the .out files.
 
-    Returns:
-        [path with all the files that match the extension glob].
+    Returns:     [path with all the files that match the extension glob].
     """
     return [y for x in os.walk(".") for y in glob(os.path.join(x[0], extension_glob))]
 
 
 def parse_orca_gibbs(file):
-    """
-    Retrieves all possible data about the logfile we're opening.
+    """Retrieves all possible data about the logfile we're opening.
+
     Currently only supports one logfile per parsing cicle.
     """
-    with open(file, "r") as f:
-        lines = f.readlines()
+    parser = OrcaParser(file)
 
-    gibbsenergy = None
-
-    for idx in range(0, len(lines)):
-        # -------------------
-        # GIBBS FREE ENERGY
-        # -------------------
-
-        # The Gibbs free energy is G = H - T*S
-
-        # Total enthalpy                    ... -12459.92150082 Eh
-        # Total entropy correction          ...     -0.11745335 Eh    -73.70 kcal/mol
-        # -----------------------------------------------------------------------
-        # Final Gibbs free energy         ... -12460.03895416 Eh
-
-        # For completeness - the Gibbs free energy minus the electronic energy
-        # G-E(el)                           ...      0.21787284 Eh    136.72 kcal/mol
-
-        if "Final Gibbs free energy" in lines[idx]:
-            gibbsenergy = float(lines[idx].strip().split()[-2])
-
-    if gibbsenergy is not None:
-        return gibbsenergy
-    else:
-        print("File {} did not have a Gibbs energy line".format(file))
-        raise SystemExit
+    gibbsenergy = parser.gibbs_energy()
+    return gibbsenergy
 
 
 def parse_orca_electronic_energy(file):
     "Retrieve the electronic energy from an ORCA calculation"
-    with open(file, "r") as f:
-        lines = f.readlines()
-
-    for idx in range(0, len(lines)):
-        # -------------------------   --------------------
-        # FINAL SINGLE POINT ENERGY     -2771.268185149811
-        # -------------------------   --------------------
-        if "FINAL SINGLE POINT ENERGY" in lines[idx]:
-            electronic_energy = float(lines[idx].strip().split()[-1])
-
-    if electronic_energy is not None:
-        return electronic_energy
-    else:
-        print("Couldn't find single point energy in the orca file {}".format(file))
-        raise SystemExit
+    parser = OrcaParser(file)
+    return parser.parse_singlepoint()
 
 
 def parse_sph_gibbs(file):
-    """
-    Retrieves the gibbs free energy correction from a single point hessian calculation
-    It assumes `file` is of type `file_name.out` and that the sph calculation is stored in a
-    `file_name.sph` file
-    """
+    """Retrieves the gibbs free energy correction from a single point hessian
+    calculation It assumes `file` is of type `file_name.out` and that the sph
+    calculation is stored in a `file_name.sph` file."""
 
     file = "." + file.split(".")[1] + ".sph"
 
@@ -133,34 +90,35 @@ def parse_sph_gibbs(file):
         lines = f.readlines()
 
     for idx in range(0, len(lines)):
-         # :::::::::::::::::::::::::::::::::::::::::::::::::::::
-         # ::                  THERMODYNAMIC                  ::
-         # :::::::::::::::::::::::::::::::::::::::::::::::::::::
-         # :: total free energy        -104.081062210216 Eh   ::
-         # ::.................................................::
-         # :: total energy             -104.457876094489 Eh   ::
-         # :: zero point energy           0.442765209983 Eh   ::
-         # :: G(RRHO) w/o ZPVE           -0.065951325709 Eh   ::
-         # :: G(RRHO) contrib.            0.376813884274 Eh   ::
-         # :::::::::::::::::::::::::::::::::::::::::::::::::::::
+        # :::::::::::::::::::::::::::::::::::::::::::::::::::::
+        # ::                  THERMODYNAMIC                  ::
+        # :::::::::::::::::::::::::::::::::::::::::::::::::::::
+        # :: total free energy        -104.081062210216 Eh   ::
+        # ::.................................................::
+        # :: total energy             -104.457876094489 Eh   ::
+        # :: zero point energy           0.442765209983 Eh   ::
+        # :: G(RRHO) w/o ZPVE           -0.065951325709 Eh   ::
+        # :: G(RRHO) contrib.            0.376813884274 Eh   ::
+        # :::::::::::::::::::::::::::::::::::::::::::::::::::::
 
         if "G(RRHO) contrib." in lines[idx]:
-             gibbsenergy = float(lines[idx].strip().split()[-3])
+            gibbsenergy = float(lines[idx].strip().split()[-3])
 
     if gibbsenergy is not None:
         return gibbsenergy
     else:
-        print("Couldn't parse gibbs free energy from the single point hessin file {}".format(file))
+        print(
+            "Couldn't parse gibbs free energy from the single point hessin file {}".format(
+                file
+            )
+        )
         raise SystemExit
 
-    
 
 def select_logs(orca_logs):
-    """
-    Select reagent, TS and product files from a list of logs.
+    """Select reagent, TS and product files from a list of logs.
 
-    Returns:
-        [reagent, ts, product].
+    Returns:     [reagent, ts, product].
     """
     reagent = inquirer.select(
         message="Select reagent log",
