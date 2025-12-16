@@ -1,8 +1,0 @@
-#!/bin/bash
-
-current_dir=$(pwd)
-
-cd ~/.taskbook
-git a . && git commit -m "updates" && git push
-
-cd $current_dir
