@@ -5,7 +5,7 @@
 #            gdrive push/pull check   to check differences
 #
 
-local=/home/vport/Chem/doutorado/projects
+local=/home/vport/projects/doc
 remote=Drive:/Chem/doutorado/projects
 
 #
