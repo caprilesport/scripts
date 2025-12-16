@@ -201,9 +201,7 @@ def main(
         False, "--use-dir-name", help="Use directory name for the job name."
     ),
 ):
-    """
-    A generalized script to generate ORCA job files for different HPC clusters.
-    """
+    """A generalized script to generate ORCA job files for different HPC clusters."""
     # --- Validation and Configuration ---
     if cluster not in CLUSTER_CONFIG:
         print(

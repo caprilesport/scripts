@@ -8,9 +8,9 @@ from glob import glob
 from rich.table import Table
 from rich.console import Console
 
-DEFAULT_REAGENT="./react-freq/init.out"
-DEFAULT_TS="./optts/init.out"
-DEFAULT_PRODUCT="./prod-freq/init.out"
+DEFAULT_REAGENT = "./react-freq/init.out"
+DEFAULT_TS = "./optts/init.out"
+DEFAULT_PRODUCT = "./prod-freq/init.out"
 
 
 def parse_arguments():
@@ -26,18 +26,21 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "-d", "--default",
+        "-d",
+        "--default",
         action="store_true",
-        help="Enable the default behavior for parsing ORCA logs."
+        help="Enable the default behavior for parsing ORCA logs.",
     )
 
     parser.add_argument(
-        "-x", "--xtb",
+        "-x",
+        "--xtb",
         action="store_true",
-        help="Use a single point hessian to correct thermodynamics."
+        help="Use a single point hessian to correct thermodynamics.",
     )
 
     return parser.parse_args()
+
 
 def is_orca_log(file: str):
     """
@@ -51,8 +54,9 @@ def is_orca_log(file: str):
             return True
         else:
             return False
-        
-def get_files(extension_glob='*.out'):
+
+
+def get_files(extension_glob="*.out"):
     """
     Walks the current directory recursively, obtaining all the .out files
 
@@ -60,6 +64,7 @@ def get_files(extension_glob='*.out'):
         [path with all the files that match the extension glob].
     """
     return [y for x in os.walk(".") for y in glob(os.path.join(x[0], extension_glob))]
+
 
 def parse_orca_gibbs(file):
     """
@@ -95,6 +100,7 @@ def parse_orca_gibbs(file):
         print("File {} did not have a Gibbs energy line".format(file))
         raise SystemExit
 
+
 def parse_orca_electronic_energy(file):
     "Retrieve the electronic energy from an ORCA calculation"
     with open(file, "r") as f:
@@ -112,7 +118,6 @@ def parse_orca_electronic_energy(file):
     else:
         print("Couldn't find single point energy in the orca file {}".format(file))
         raise SystemExit
-
 
 
 def parse_sph_gibbs(file):
@@ -189,17 +194,23 @@ def main():
         transition_state = DEFAULT_TS
         product = DEFAULT_PRODUCT
     else:
-        reagent, transition_state, product = select_logs([file for file in get_files() if is_orca_log(file)])
+        reagent, transition_state, product = select_logs(
+            [file for file in get_files() if is_orca_log(file)]
+        )
 
     if args.xtb:
-        energies = [parse_orca_electronic_energy(log) + parse_sph_gibbs(log) for log in [reagent,  transition_state, product]]
+        energies = [
+            parse_orca_electronic_energy(log) + parse_sph_gibbs(log)
+            for log in [reagent, transition_state, product]
+        ]
         table = Table(title="Relative energies with SPH from xtb")
     else:
-        energies = [parse_orca_gibbs(log) + parse_orca_gibbs(log) for log in [reagent, transition_state, product]]
+        energies = [
+            parse_orca_gibbs(log) for log in [reagent, transition_state, product]
+        ]
         table = Table(title="Relative energies")
 
     rel_energies = [(v - energies[0]) * 627.15 for v in energies]
-    
 
     table.add_column()
     table.add_column("Energy (kcal mol-1)")
@@ -212,6 +223,7 @@ def main():
 
     console = Console()
     console.print(table)
+
 
 if __name__ == "__main__":
     main()
