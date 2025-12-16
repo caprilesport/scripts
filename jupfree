@@ -1,0 +1,260 @@
+#!/usr/bin/env -S uv run --script
+
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "rich",
+# ]
+# ///
+
+
+import argparse
+import subprocess
+import json
+from dataclasses import dataclass
+from rich.console import Console
+from rich.table import Table
+from rich import box
+
+
+@dataclass
+class Node:
+    name: str
+    state: str
+    cpus: int
+    mem: str
+    queue: str
+
+    def __repr__(self):
+        return f"Node(name='{self.name}', state='{self.state}', cpus={self.cpus}, mem='{self.mem}', queue='{self.queue}')"
+
+    def __str__(self):
+        return f"{self.name:10} | {self.state:10} | {self.cpus:4} | {self.mem:8} | {self.queue}"
+
+
+def parse_pbsnodes(json_data):
+    nodes = []
+    for node_name, node_data in json_data.get("nodes", {}).items():
+        # Extract data with fallbacks
+        state = node_data.get("state", "unknown")
+        queue = node_data.get("queue", "unknown")
+
+        # Get CPU count
+        pcpus = node_data.get("pcpus", 0)
+        ncpus = node_data.get("resources_available", {}).get("ncpus", pcpus)
+        cpus = int(ncpus if ncpus else pcpus)
+
+        # Get memory
+        mem = node_data.get("resources_available", {}).get("mem", "0gb").upper()
+
+        # Create Node object
+        node = Node(node_name, state, cpus, mem, queue)
+        nodes.append(node)
+
+    return nodes
+
+
+def is_node_actually_free(node_name, node_data):
+    """Check if a node is truly free:
+
+    1. State must be 'free' 2. No jobs should be assigned to it (jobs list should be
+    empty or non-existent) 3. resources_assigned should be empty or have zero values
+    """
+    # Check state
+    if node_data.get("state") != "free":
+        return False
+
+    # Check if there are jobs assigned
+    jobs = node_data.get("jobs", [])
+    if jobs:
+        return False
+
+    # Check if resources are assigned (some systems mark as 'free' but have assigned resources)
+    resources_assigned = node_data.get("resources_assigned", {})
+
+    # Check if any resources are actually assigned
+    if resources_assigned:
+        # Check if ncpus are assigned (non-zero)
+        assigned_ncpus = resources_assigned.get("ncpus", 0)
+        if assigned_ncpus > 0:
+            return False
+
+        # Check if memory is assigned (non-zero)
+        assigned_mem = resources_assigned.get("mem", "0kb")
+        # Convert memory string to check if non-zero
+        if assigned_mem and assigned_mem != "0kb":
+            return False
+
+    return True
+
+
+def parse_pbsnodes_with_availability(json_data):
+    nodes = []
+    for node_name, node_data in json_data.get("nodes", {}).items():
+        # Extract data with fallbacks
+        state = node_data.get("state", "unknown")
+        queue = node_data.get("queue", "unknown")
+
+        # Get CPU count
+        pcpus = node_data.get("pcpus", 0)
+        ncpus = node_data.get("resources_available", {}).get("ncpus", pcpus)
+        cpus = int(ncpus if ncpus else pcpus)
+
+        # Get memory
+        mem = node_data.get("resources_available", {}).get("mem", "0gb").upper()
+
+        # Create Node object
+        node = Node(node_name, state, cpus, mem, queue)
+        nodes.append(node)
+
+    return nodes
+
+
+def execute_pbsnodes():
+    output = subprocess.check_output(
+        ["ssh", "jupiter", "pbsnodes", "-a", "-F", "json"],
+        text=True,
+        stderr=subprocess.STDOUT,
+    )
+    json_out = json.loads(output)
+    return json_out
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Check free nodes in jupiter",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                    # Show summary of all nodes
+  %(prog)s --all/-a           # Show all free nodes sorted by queue
+        """,
+    )
+
+    # Add arguments
+    parser.add_argument(
+        "-a", "--all", action="store_true", help="show all free nodes sorted by queue"
+    )
+
+    # Parse the arguments
+    args = parser.parse_args()
+
+    return args
+
+
+def show_free_nodes_table(nodes, json_data):
+    """Show table of all truly free nodes sorted by queue and name."""
+    console = Console()
+
+    # Filter and sort truly free nodes
+    free_nodes = []
+    for node in nodes:
+        node_data = json_data.get("nodes", {}).get(node.name)
+        if node_data and is_node_actually_free(node.name, node_data):
+            free_nodes.append(node)
+
+    free_nodes.sort(key=lambda x: (x.queue, x.name))
+
+    if not free_nodes:
+        console.print("[yellow]No free nodes available.[/yellow]")
+        return
+
+    # Create table
+    table = Table(box=box.ROUNDED)
+    table.add_column("Node Name", style="cyan")
+    table.add_column("Queue", style="green")
+    table.add_column("CPUs", justify="right", style="blue")
+    table.add_column("Memory", justify="right", style="magenta")
+
+    # Add rows
+    for node in free_nodes:
+        table.add_row(node.name, node.queue, str(node.cpus), node.mem)
+
+    # Display
+    console.print(table)
+    console.print(f"\nTotal free nodes: [bold green]{len(free_nodes)}[/bold green]")
+
+
+def show_queue_summary(nodes, json_data):
+    """Show summary table with free nodes per queue."""
+    console = Console()
+
+    # Calculate queue statistics
+    queue_stats = {}
+    for node in nodes:
+        queue = node.queue
+        if queue not in queue_stats:
+            queue_stats[queue] = {"total": 0, "free": 0, "busy": 0}
+
+        queue_stats[queue]["total"] += 1
+
+        # Check if node is actually free
+        node_data = json_data.get("nodes", {}).get(node.name)
+        if node_data and is_node_actually_free(node.name, node_data):
+            queue_stats[queue]["free"] += 1
+        else:
+            queue_stats[queue]["busy"] += 1
+
+    # Create table
+    table = Table(box=box.ROUNDED)
+    table.add_column("Queue", style="cyan")
+    table.add_column("Free Nodes", justify="center")
+    table.add_column("Busy Nodes", justify="center")
+    table.add_column("Total Nodes", justify="center")
+    table.add_column("Free %", justify="right")
+
+    # Add rows
+    for queue, stats in sorted(queue_stats.items()):
+        free = stats["free"]
+        busy = stats["busy"]
+        total = stats["total"]
+        percentage = (free / total * 100) if total > 0 else 0
+
+        # Color code
+        free_str = f"[green]{free}[/green]" if free > 0 else f"[red]{free}[/red]"
+        busy_str = f"[yellow]{busy}[/yellow]" if busy > 0 else str(busy)
+
+        table.add_row(queue, free_str, busy_str, str(total), f"{percentage:.1f}%")
+
+    # Display
+    console.print(table)
+
+    # Overall stats
+    total_nodes = len(nodes)
+    total_free = sum(
+        1
+        for node in nodes
+        if json_data.get("nodes", {}).get(node.name)
+        and is_node_actually_free(node.name, json_data["nodes"][node.name])
+    )
+    overall_percentage = (total_free / total_nodes * 100) if total_nodes > 0 else 0
+
+    console.print(
+        f"\n [green]{total_free}[/green] free nodes out of {total_nodes} nodes ({overall_percentage:.1f}%)"
+    )
+
+
+def main():
+    console = Console()
+
+    # Get data
+    try:
+        # console.print("[bold blue]Fetching nodes from Jupiter...[/bold blue]")
+        json_data = execute_pbsnodes()
+        nodes = parse_pbsnodes(json_data)
+    except Exception as e:
+        console.print(f"[bold red]Error: {e}[/bold red]")
+        return
+
+    # Parse arguments
+    args = parse_arguments()
+
+    # Show appropriate view
+    if args.all:
+        show_free_nodes_table(nodes, json_data)
+    else:
+        show_queue_summary(nodes, json_data)
+
+
+if __name__ == "__main__":
+    main()
