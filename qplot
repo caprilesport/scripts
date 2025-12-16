@@ -16,8 +16,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import make_interp_spline
 from scipy.constants import calorie, kilo, N_A, physical_constants
+from mylib.parsers import OrcaParser
 
 hartree, _, _ = physical_constants["Hartree energy"]
+
+plt.rcParams.update({"text.usetex": True, "font.size": 18})
 
 
 def plot_irc(files):
@@ -213,46 +216,7 @@ def plot_scan(files, relative):
             print(f"Error: File not found at {file_path}", file=sys.stderr)
             continue
 
-        start = 0
-        end = 0
-
-        for i, line in enumerate(lines):
-            if "The Calculated Surface using the 'Actual Energy'" in line:
-                start = i + 1
-            if "The Calculated Surface using the SCF energy" in line:
-                end = i - 1
-
-        if start == 0:
-            print(f"Warning: Scan data not found in {file_path}", file=sys.stderr)
-            continue
-
-        if end == 0:
-            end = len(lines)
-
-        data = lines[start:end]
-        x = []
-        y = []
-
-        for line in data:
-            parts = line.strip().split()
-            if not parts:
-                continue
-            try:
-                x.append(float(parts[0]))
-                y.append(float(parts[1]))
-            except (ValueError, IndexError):
-                print(
-                    f"Warning: Could not parse line in {file_path}: {line.strip()}",
-                    file=sys.stderr,
-                )
-                continue
-
-        if not x or not y:
-            print(
-                f"Warning: No data points found for Scan in {file_path}",
-                file=sys.stderr,
-            )
-            continue
+        x, y = OrcaParser(lines).parse_relaxed_scan()
 
         if x[-1] < x[0]:
             x.reverse()
