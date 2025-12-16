@@ -1,0 +1,52 @@
+#!/usr/bin/env -S uv run --script
+
+import argparse
+from mylib.parsers import OrcaParser
+
+
+# TODO: error handling
+#
+class FailedToGetGeometry(Exception):
+    pass
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Get the last geometry of an orca optimization as an xyz file"
+    )
+    parser.add_argument("file", help="One or more files to plot.")
+    parser.add_argument(
+        "-w",
+        "--write",
+        action="store_true",
+        help="Remove the .out extension and write it to an .xyz file.",
+    )
+
+    args = parser.parse_args()
+    orca_parser = OrcaParser(args.file)
+
+    geometries = orca_parser.parse_optimization_geometries()
+    if not geometries:
+        last_geom = orca_parser.geometry_from_singlepoint()
+        xyz_message = f"Singlepoint calculation geometry from {args.file}"
+        if not last_geom:
+            raise FailedToGetGeometry(
+                f"Failed to get geometry for the file {args.file}"
+            )
+    else:
+        last_geom = geometries[-1]
+        xyz_message = f"Optimized geometry from {args.file}"
+
+    nr_atoms = len(last_geom)
+    if args.write:
+        outname = args.file.split(".")[0] + ".xyz"
+        with open(outname, "w") as f:
+            f.write(str(nr_atoms))
+            f.write(xyz_message)
+            for line in last_geom:
+                f.write(line)
+    else:
+        print(nr_atoms)
+        print(xyz_message)
+        for line in last_geom:
+            print(line)
