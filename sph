@@ -1,0 +1,5 @@
+#!/usr/bin/bash
+#
+
+filename="${1%.*}"
+xtb $1 --bhess -P 6 -c 0 >  $filename.sph
