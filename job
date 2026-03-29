@@ -1,16 +1,59 @@
 #!/usr/bin/bash
 
-# Default ORCA executable
-orca_executable="/home/vport/software/orca_6_0_1/orca"
+# ================= CONFIGURATION =================
+# Define your ORCA paths
+orca_5_path="/home/vport/software/orca_5_0_4/orca"
+orca_6_path="/home/vport/software/orca_6_1_1/orca"
 
-# Parse optional version flag
+# Define your OpenMPI Base Directories (UPDATE THESE PATHS)
+# Example: /usr/lib64/openmpi or /home/vport/opt/openmpi-4.1.1
+MPI_411_HOME="/opt/openmpi-4.1.1" 
+MPI_418_HOME="/opt/openmpi-4.1.8"
+# =================================================
+
+# Helper function to remove a specific path from a variable
+# Usage: remove_path "variable_name" "path_to_remove"
+remove_path() {
+    local var_name=$1
+    local path_to_remove=$2
+    local current_val=${!var_name}
+
+    # Use colon as delimiter for replacement
+    # 1. Remove path from middle (:path:)
+    # 2. Remove path from start (path:)
+    # 3. Remove path from end (:path)
+    # 4. Remove if it's the only path
+    
+    current_val=${current_val//:$path_to_remove:/:}
+    current_val=${current_val/#$path_to_remove:/" "}
+    current_val=${current_val/%:$path_to_remove/""}
+    current_val=${current_val/#$path_to_remove/""}
+    
+    # Export the modified variable back
+    export $var_name="$current_val"
+}
+
+# Default setup (ORCA 5 matches your default system environment)
+orca_executable="$orca_5_path"
+
+# Parse flags
 while getopts ":v:" opt; do
   case $opt in
     v)
-      if [[ $OPTARG == "5" ]]; then
-        orca_executable="/home/vport/software/orca_5_0_4/orca"
-      elif [[ $OPTARG != "6" ]]; then
-        echo "Unsupported ORCA version. Use 6 (default) or 5."
+      if [[ $OPTARG == "6" ]]; then
+        # --- SWITCH TO ORCA 6 ENVIRONMENT ---
+        orca_executable="$orca_6_path"
+
+        # 1. Remove default OpenMPI 4.1.1 from environment
+        remove_path "PATH" "$MPI_411_HOME/bin"
+        remove_path "LD_LIBRARY_PATH" "$MPI_411_HOME/lib"
+
+        # 2. Add OpenMPI 4.1.8 to environment (Prepend to ensure priority)
+        export PATH="$MPI_418_HOME/bin:$PATH"
+        export LD_LIBRARY_PATH="$MPI_418_HOME/lib:$LD_LIBRARY_PATH"
+
+      elif [[ $OPTARG != "5" ]]; then
+        echo "Unsupported ORCA version. Use 6 or 5 (default)."
         exit 1
       fi
       ;;
@@ -21,11 +64,19 @@ while getopts ":v:" opt; do
   esac
 done
 
-# Shift arguments to get the input file as $1
+# Shift arguments to get the input file
 shift $((OPTIND - 1))
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 [-v 5|6] <input_file>"
+    exit 1
+fi
 
 infile=$1
 outfile="${infile%.*}.out"
 
-# Run ORCA with the chosen executable
+# Debug: Uncomment the next line to check paths before running
+echo -e "PATH: $PATH\nLD: $LD_LIBRARY_PATH\nEXE: $orca_executable"
+
+# Run ORCA
 $orca_executable "$infile" --use-hwthread-cpus > "$outfile"
