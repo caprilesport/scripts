@@ -3,29 +3,46 @@
 # requires-python = ">=3.13"
 # dependencies = [
 #     "typer",
+#     "InquirerPy",
 # ]
 # ///
 
 import re
-import subprocess
+import sys
 import typer
 from pathlib import Path
 import os
-import sys
+from typing import Optional
 
 # --- Cluster Configurations ---
 CLUSTER_CONFIG = {
     "jupiter": {
         "scheduler": "pbs",
-        "orca_path": "/home/Softwares/orca5.0.3/orca",
+        "orca_path": "/home/Softwares/orca5.0.4/orca",
         "queues": {
             "small": {"max_procs": 8, "default_mem_per_proc": 1375},
-            "big": {"max_procs": 16, "default_mem_per_proc": 1875},
+            "fast": {"max_procs": 8, "default_mem_per_proc": 1375},
+            "freq": {"max_procs": 8, "default_mem_per_proc": 3700},
+            "big": {"max_procs": 16, "default_mem_per_proc": 1650},
         },
         "default_queue": "small",
         "walltime": "720:00:00",
         "submission_command": "qsub",
-        "forbidden_path_prefix": f"/home/{os.environ.get('USER')}",
+        "recli_remote": "jupiter",
+    },
+    "colaco": {
+        "scheduler": "pbs",
+        "orca_path": "/home/Softwares/orca5.0.4/orca",
+        "queues": {
+            "small": {"max_procs": 8, "default_mem_per_proc": 1375},
+            "fast": {"max_procs": 8, "default_mem_per_proc": 1375},
+            "freq": {"max_procs": 8, "default_mem_per_proc": 3700},
+            "big": {"max_procs": 16, "default_mem_per_proc": 1650},
+        },
+        "default_queue": "small",
+        "walltime": "720:00:00",
+        "submission_command": "qsub",
+        "recli_remote": "colaco",
     },
     "loboc": {
         "scheduler": "pbs",
@@ -40,15 +57,17 @@ CLUSTER_CONFIG = {
             "5": "/opt/orca/orca-5.0.4/orca",
             "6": "/opt/orca/orca-6.1.0/orca",
         },
-        "default_orca_version": "6",
-        "walltime": "3-00:00:00",
+        "default_orca_version": "5",
+        "walltime": "4-00:00:00",
         "partition": "long",
         "submission_command": "sbatch",
         "modules": ["fermi/openmpi-4.1.6"],
     },
-    "pipeline": {
-        "default_orca_version": "5",
+    "babel": {
+        "default_orca_version": "6",
+        "max_procs": 16,
         "submission_command": "source",
+        "recli_remote": "babel",
     },
 }
 
@@ -72,12 +91,13 @@ export TDIR=/rascunho/${{USER}}-${{PBS_JOBID}}
 mkdir -p ${{TDIR}}
 
 cp ${{PBS_O_WORKDIR}}/{input_filename} ${{TDIR}}
-for f in ${{PBS_O_WORKDIR}}/*.gbw ${{PBS_O_WORKDIR}}/*.xyz ${{PBS_O_WORKDIR}}/*.hess ${{PBS_O_WORKDIR}}/*.res.*; do cp $f ${{TDIR}}; done
+for f in ${{PBS_O_WORKDIR}}/*.gbw ${{PBS_O_WORKDIR}}/*xyz ${{PBS_O_WORKDIR}}/*.hess ${{PBS_O_WORKDIR}}/*.res.* ${{PBS_O_WORKDIR}}/*.mp2nat; do cp $f ${{TDIR}}; done
 
 cd ${{TDIR}}
 
 # Log the job start details
 echo "start of job:" `date` > ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+echo "nboenv:" $NBOEXE > ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
 echo "Job started from ${{PBS_O_HOST}}, running on $(hostname) in ${{PBS_O_WORKDIR}} " >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
 echo "temporary directory: ${{TDIR}}" >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
 
@@ -103,6 +123,8 @@ JOB_ID=${{PBS_JOBID%.*}}
 # Log the job start details
 echo "start of job:" `date` > ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
 echo "Job started from ${{PBS_O_HOST}}, running on $(hostname) in ${{PBS_O_WORKDIR}} " >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+
+cd ${{PBS_O_WORKDIR}}
 
 # Run the Orca job
 {orca_path} $PBS_O_WORKDIR/{input_filename} > $PBS_O_WORKDIR/{input_stem}.out || true
@@ -140,7 +162,72 @@ echo "# ORCA job finished at: $(date)"
 echo "########################################################"
 """
 
-app = typer.Typer(add_completion=False)
+SCRIPT_EXT = {
+    "jupiter": ".pbs",
+    "colaco": ".pbs",
+    "loboc": ".pbs",
+    "newton": ".slurm",
+    "babel": ".pueue",
+}
+
+def _complete_remote(incomplete: str) -> list[str]:
+    return [r for r in CLUSTER_CONFIG if r.startswith(incomplete)]
+
+def _complete_queue(incomplete: str) -> list[str]:
+    return [q for q in ["small", "fast", "freq", "big"] if q.startswith(incomplete)]
+
+def _complete_strategy(incomplete: str) -> list[str]:
+    return [s for s in ["basename", "script", "directory"] if s.startswith(incomplete)]
+
+def _complete_orca_version(incomplete: str) -> list[str]:
+    return [v for v in ["5", "6"] if v.startswith(incomplete)]
+
+app = typer.Typer(add_completion=True)
+
+
+def run_interactive_prompts(
+    remote: Optional[str],
+    queue: Optional[str],
+    orca_version: Optional[str],
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Fill in unspecified options via InquirerPy prompts."""
+    from InquirerPy import inquirer
+    from InquirerPy.base.control import Choice
+
+    if not remote:
+        remote = inquirer.select(
+            message="Remote:",
+            choices=list(CLUSTER_CONFIG.keys()),
+        ).execute()
+
+    if remote == "jupiter" and not queue:
+        jupiter_queues = CLUSTER_CONFIG["jupiter"]["queues"]
+        choices = [Choice(value=None, name="auto  (nprocs=16 → big, else → small)")]
+        for qname, qcfg in sorted(jupiter_queues.items()):
+            choices.append(Choice(value=qname, name=f"{qname}  (max {qcfg['max_procs']} procs)"))
+        queue = inquirer.select(
+            message="Queue:",
+            choices=choices,
+        ).execute()
+
+    if remote in ("newton", "babel") and not orca_version:
+        if remote == "newton":
+            versions = list(CLUSTER_CONFIG["newton"]["orca_paths"].keys())
+            default = CLUSTER_CONFIG["newton"]["default_orca_version"]
+        else:
+            versions = ["5", "6"]
+            default = CLUSTER_CONFIG["babel"]["default_orca_version"]
+        orca_version = inquirer.select(
+            message="ORCA version:",
+            choices=versions,
+            default=default,
+        ).execute()
+
+    return remote, queue, orca_version
+
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 
 def parse_orca_input(content: str) -> dict:
@@ -167,50 +254,81 @@ def parse_orca_input(content: str) -> dict:
     return {"nprocs": nprocs, "maxcore": maxcore}
 
 
-@app.command()
-def main(
-    input_file: Path = typer.Argument(
-        ...,
-        exists=True,
-        file_okay=True,
-        dir_okay=False,
-        help="Path to the ORCA input file (.inp).",
-    ),
-    cluster: str = typer.Option(
-        ...,
-        "--cluster",
-        "-c",
-        help=f"Target cluster. Available: {list(CLUSTER_CONFIG.keys())}",
-    ),
-    queue: str = typer.Option(
-        None,
-        "--queue",
-        "-q",
-        help="Queue for submission (for PBS clusters like Jupiter).",
-    ),
-    walltime: str = typer.Option(
-        None,
-        "--walltime",
-        "-t",
-        help="Set the walltime (e.g., 48:00:00 or 2-00:00:00).",
-    ),
-    orca_version: str = typer.Option(
-        None, "--orca-version", help="ORCA version to use (for Newton)."
-    ),
-    use_dir_name: bool = typer.Option(
-        False, "--use-dir-name", help="Use directory name for the job name."
-    ),
+def rewrite_nprocs_in_content(content: str, new_nprocs: int) -> str:
+    """Rewrite the nprocs value in an ORCA input string."""
+    if re.search(r"\bPAL\d+\b", content, re.IGNORECASE):
+        return re.sub(r"\bPAL\d+\b", f"PAL{new_nprocs}", content, flags=re.IGNORECASE)
+    if re.search(r"\bnprocs\s+\d+", content, re.IGNORECASE):
+        return re.sub(r"(\bnprocs\s+)\d+", rf"\g<1>{new_nprocs}", content, flags=re.IGNORECASE)
+    return content
+
+
+def extract_orca_tags(content: str) -> list[str]:
+    """Derive recli tags from the ORCA input keywords."""
+    tags = []
+
+    kw_line = " ".join(
+        line.strip().lower()
+        for line in content.splitlines()
+        if line.strip().startswith("!")
+    )
+
+    # Job type — specific types before generic ones
+    if "neb-ts" in kw_line:
+        tags.append("neb-ts")
+    elif "neb" in kw_line:
+        tags.append("neb")
+    elif "optts" in kw_line:
+        tags.append("optts")
+    elif "irc" in kw_line:
+        tags.append("irc")
+    elif "optfreq" in kw_line or ("opt" in kw_line and ("freq" in kw_line or "numfreq" in kw_line)):
+        tags.append("optfreq")
+    elif "opt" in kw_line:
+        if re.search(r"^\s*scan\b", content, re.IGNORECASE | re.MULTILINE):
+            tags.append("scan")
+        else:
+            tags.append("opt")
+    elif "numfreq" in kw_line or "freq" in kw_line:
+        tags.append("freq")
+    elif "nmr" in kw_line:
+        tags.append("nmr")
+    elif "eda" in kw_line:
+        tags.append("eda")
+    elif "nbo" in kw_line:
+        tags.append("nbo")
+    elif "goat" in kw_line:
+        tags.append("goat")
+    else:
+        tags.append("sp")
+
+    # Method — only tag non-DFT methods worth distinguishing
+    if "xtb" in kw_line:
+        tags.append("xtb")
+    elif "dlpno" in kw_line:
+        tags.append("dlpno")
+    elif any(m in kw_line for m in ["ccsd", "cisd", "fci"]):
+        tags.append("wf")
+    elif "mp2" in kw_line:
+        tags.append("mp2")
+    elif "hf" in kw_line and not any(
+        x in kw_line for x in ["b3lyp", "pbe", "tpss", "m06", "cam-b3lyp", "wb97"]
+    ):
+        tags.append("hf")
+
+    return tags
+
+
+def process_file(
+    input_file: Path,
+    remote: str,
+    config: dict,
+    queue: Optional[str],
+    orca_version: Optional[str],
+    use_dir_name: bool,
+    extra_tags: Optional[str],
+    strategy: Optional[str],
 ):
-    """A generalized script to generate ORCA job files for different HPC clusters."""
-    # --- Validation and Configuration ---
-    if cluster not in CLUSTER_CONFIG:
-        print(
-            f"Error: Cluster '{cluster}' not recognized. Available options: {list(CLUSTER_CONFIG.keys())}"
-        )
-        raise typer.Exit(code=1)
-
-    config = CLUSTER_CONFIG[cluster]
-
     if use_dir_name:
         current_dir = Path.cwd()
         job_name = f"{current_dir.parent.name}_{current_dir.name}"
@@ -221,67 +339,71 @@ def main(
     input_stem = input_file.stem
     content = input_file.read_text()
 
-    # --- Parse Input File ---
-    parsed_params = parse_orca_input(content)
-    nprocs = parsed_params.get("nprocs")
-    maxcore = parsed_params.get("maxcore")
+    parsed = parse_orca_input(content)
+    nprocs = parsed.get("nprocs")
+    maxcore = parsed.get("maxcore")
 
-    if cluster != "pipeline" and not nprocs:
-        print(
-            "Error: Could not find the number of processors (nprocs or PAL) in the input file."
-        )
-        raise typer.Exit(code=1)
+    if remote != "babel" and not nprocs:
+        eprint(f"Error [{input_file.name}]: could not find nprocs or PAL in input file.")
+        return
 
-    print(f"Job Name: {job_name}")
-    print(f"Cluster: {cluster}")
-    print(f"Processors (nprocs): {nprocs}")
-    if maxcore:
-        print(f"Memory per Core (maxcore): {maxcore} MB")
-
-    # --- Cluster-Specific Logic ---
     job_script_content = ""
+    resolved_queue = queue  # track for tag generation
 
-    if cluster == "jupiter":
-        # Path validation
+    if remote in ("jupiter", "colaco"):
+        if not queue:
+            resolved_queue = "big" if nprocs == 16 else "small"
+        else:
+            resolved_queue = queue
 
-        q = queue or config["default_queue"]
-        if q not in config["queues"]:
-            print(
-                f"Error: Queue '{q}' is not valid for Jupiter. Options: {list(config['queues'].keys())}"
+        if resolved_queue not in config["queues"]:
+            eprint(
+                f"Error [{input_file.name}]: queue '{resolved_queue}' not valid for Jupiter. "
+                f"Options: {list(config['queues'].keys())}"
             )
-            raise typer.Exit(code=1)
+            return
 
-        if nprocs > config["queues"][q]["max_procs"]:
-            print(
-                f"Error: {nprocs} processors requested, but queue '{q}' only allows {config['queues'][q]['max_procs']}."
+        max_procs = config["queues"][resolved_queue]["max_procs"]
+
+        if nprocs > max_procs:
+            eprint(
+                f"Error [{input_file.name}]: {nprocs} procs requested but '{resolved_queue}' allows {max_procs}."
             )
-            raise typer.Exit(code=1)
+            return
+
+        if nprocs < max_procs:
+            eprint(
+                f"Warning [{input_file.name}]: input has {nprocs} procs but '{resolved_queue}' supports up to {max_procs}."
+            )
+            if typer.confirm(f"  Upgrade nprocs {nprocs} → {max_procs} in {input_file.name}?"):
+                content = rewrite_nprocs_in_content(content, max_procs)
+                input_file.write_text(content)
+                eprint(f"  Upgraded nprocs: {nprocs} → {max_procs}")
+                nprocs = max_procs
 
         if maxcore:
             memory_gb = (maxcore * nprocs) // 1000
         else:
-            memory_gb = (config["queues"][q]["default_mem_per_proc"] * nprocs) // 1000
+            memory_gb = (config["queues"][resolved_queue]["default_mem_per_proc"] * nprocs) // 1000
 
-        print(f"Queue: {q}")
-        print(f"Total Memory: {memory_gb} GB")
+        log = f"queue={resolved_queue}  nprocs={nprocs}  mem={memory_gb}gb"
 
         job_script_content = PBS_JUPITER_TEMPLATE.format(
             nprocs=nprocs,
-            walltime=walltime or config["walltime"],
+            walltime=config["walltime"],
             memory_gb=memory_gb,
-            queue=q,
+            queue=resolved_queue,
             job_name=job_name,
             orca_path=config["orca_path"],
             input_filename=input_filename,
             input_stem=input_stem,
         )
 
-    elif cluster == "loboc":
-        wt = walltime or config["default_walltime"]
-        print(f"Walltime: {wt}")
+    elif remote == "loboc":
+        log = f"nprocs={nprocs}"
         job_script_content = PBS_LOBOC_TEMPLATE.format(
             nprocs=nprocs,
-            walltime=wt,
+            walltime=config["default_walltime"],
             job_name=job_name,
             orca_path=config["orca_path"],
             modules=" ".join(config["modules"]),
@@ -289,49 +411,121 @@ def main(
             input_stem=input_stem,
         )
 
-    elif cluster == "newton":
+    elif remote == "newton":
         if not maxcore:
-            maxcore = 3750  # Default value
-            print(
-                f"Warning: 'maxcore' not found in input. Using default value: {maxcore} MB/core"
+            maxcore = 3750
+            eprint(
+                f"Warning [{input_file.name}]: maxcore not found, using default {maxcore} MB/core"
             )
 
         version = orca_version or config["default_orca_version"]
         if version not in config["orca_paths"]:
-            print(
-                f"Error: ORCA version '{version}' is not supported on Newton. Options: {list(config['orca_paths'].keys())}"
+            eprint(
+                f"Error [{input_file.name}]: ORCA version '{version}' not supported on Newton. "
+                f"Options: {list(config['orca_paths'].keys())}"
             )
-            raise typer.Exit(code=1)
+            return
 
-        orca_exec = config["orca_paths"][version]
-        orca_version_label = f"ORCA {version}"
         total_mem_mb = nprocs * maxcore
-
-        print(f"ORCA Version: {orca_version_label}")
-        print(f"Total Memory: {total_mem_mb} MB")
+        log = f"nprocs={nprocs}  mem={total_mem_mb}mb  orca={version}"
 
         job_script_content = SLURM_NEWTON_TEMPLATE.format(
             job_name=job_name,
             nprocs=nprocs,
             memory_mb=total_mem_mb,
-            walltime=walltime or config["walltime"],
+            walltime=config["walltime"],
             partition=config["partition"],
             modules=" ".join(config["modules"]),
-            orca_version_label=orca_version_label,
-            orca_exec=orca_exec,
+            orca_version_label=f"ORCA {version}",
+            orca_exec=config["orca_paths"][version],
             input_filename=input_filename,
             input_stem=input_stem,
         )
 
-    elif cluster == "pipeline":
+    elif remote == "babel":
         version = orca_version or config["default_orca_version"]
-        job_script_content = f"pueue add -- /home/vport/projects/scripts/job -v {version} {input_filename}"
+        log = f"orca={version}"
+        job_script_content = f"/home/vport/scripts/job -v {version} {input_filename}"
 
-    # --- Write Job Script ---
-    job_script_path = Path(f"{job_name}.job")
+    job_script_path = Path(f"{job_name}{SCRIPT_EXT[remote]}")
     job_script_path.write_text(job_script_content)
+    eprint(f"[{input_file.name}]  {log}  →  {job_script_path}")
 
-    print(f"Generated job script: {job_script_path}")
+    recli_remote = config.get("recli_remote")
+    if recli_remote:
+        auto_tags = extract_orca_tags(content)
+        if extra_tags:
+            auto_tags += [t.strip() for t in extra_tags.split(",") if t.strip()]
+        cmd = ["recli", "submit", str(job_script_path), "-r", recli_remote]
+        if strategy:
+            cmd += ["--strategy", strategy]
+        if auto_tags:
+            cmd += ["--tags"] + auto_tags
+        print(" ".join(cmd))
+
+
+@app.command()
+def main(
+    input_files: list[Path] = typer.Argument(
+        ..., help="ORCA input file(s) (.inp)."
+    ),
+    remote: Optional[str] = typer.Option(
+        None, "--remote", "-r",
+        help=f"Target remote. Available: {list(CLUSTER_CONFIG.keys())}",
+        autocompletion=_complete_remote,
+    ),
+    queue: Optional[str] = typer.Option(
+        None, "--queue", "-q",
+        help="Queue override (Jupiter: small/fast/freq/big). Auto-selected if omitted.",
+        autocompletion=_complete_queue,
+    ),
+    orca_version: Optional[str] = typer.Option(
+        None, "--orca-version", help="ORCA version to use (Newton/babel).",
+        autocompletion=_complete_orca_version,
+    ),
+    use_dir_name: bool = typer.Option(
+        False, "--use-dir-name",
+        help="Use 'parent_dir_current_dir' as job name instead of the input file stem.",
+    ),
+    extra_tags: Optional[str] = typer.Option(
+        None, "--tags",
+        help="Extra tags (comma-separated) appended to auto-generated ones.",
+    ),
+    strategy: Optional[str] = typer.Option(
+        None, "--strategy",
+        help="recli file upload strategy (basename, script, directory). Uses recli's configured default if omitted.",
+        autocompletion=_complete_strategy,
+    ),
+    interactive: bool = typer.Option(
+        False, "--interactive", "-i",
+        help="Prompt for remote, queue, and ORCA version interactively.",
+    ),
+):
+    """Generate ORCA job scripts for HPC clusters. Prints recli submit commands to stdout."""
+    if interactive:
+        remote, queue, orca_version = run_interactive_prompts(remote, queue, orca_version)
+
+    if not remote:
+        eprint("Error: --remote/-r is required (or use --interactive).")
+        raise typer.Exit(code=1)
+
+    if remote not in CLUSTER_CONFIG:
+        eprint(
+            f"Error: remote '{remote}' not recognized. "
+            f"Available: {list(CLUSTER_CONFIG.keys())}"
+        )
+        raise typer.Exit(code=1)
+
+    config = CLUSTER_CONFIG[remote]
+
+    if use_dir_name and len(input_files) > 1:
+        eprint("Warning: --use-dir-name with multiple files assigns the same job name to all.")
+
+    for input_file in input_files:
+        if not input_file.exists():
+            eprint(f"Error: file not found: {input_file}")
+            continue
+        process_file(input_file, remote, config, queue, orca_version, use_dir_name, extra_tags, strategy)
 
 
 if __name__ == "__main__":
