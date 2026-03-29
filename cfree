@@ -1,0 +1,392 @@
+#!/usr/bin/env -S uv run --script
+
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "rich",
+# ]
+# ///
+
+
+import argparse
+import concurrent.futures
+import json
+import subprocess
+from dataclasses import dataclass
+
+from rich import box
+from rich.columns import Columns
+from rich.console import Console
+from rich.table import Table
+
+MY_USER = "vport"
+FRIEND_USER = "colaco"
+BABEL_HOST = "babel"
+
+MAX_JOBS = {
+    "freq": 2,
+    "big": 4,
+    "small": 5,
+    "fast": 1,
+}
+
+
+@dataclass
+class Node:
+    name: str
+    state: str
+    cpus: int
+    mem: str
+    queue: str
+
+    def __repr__(self):
+        return f"Node(name='{self.name}', state='{self.state}', cpus={self.cpus}, mem='{self.mem}', queue='{self.queue}')"
+
+    def __str__(self):
+        return f"{self.name:10} | {self.state:10} | {self.cpus:4} | {self.mem:8} | {self.queue}"
+
+
+class UserNodes:
+    def __init__(self, queue):
+        self.queue = queue
+        self.used_nodes = 0
+        self.free_nodes = 0
+        self.queued_jobs = 0
+
+    def add_used_node(self):
+        self.used_nodes += 1
+
+    def add_queued_jobs(self):
+        self.queued_jobs += 1
+
+    def calc_free_nodes(self, max_jobs):
+        self.free_nodes = max_jobs - self.used_nodes
+
+
+def parse_pbsnodes(json_data):
+    nodes = []
+    for node_name, node_data in json_data.get("nodes", {}).items():
+        state = node_data.get("state", "unknown")
+        queue = node_data.get("queue", "unknown")
+
+        pcpus = node_data.get("pcpus", 0)
+        ncpus = node_data.get("resources_available", {}).get("ncpus", pcpus)
+        cpus = int(ncpus if ncpus else pcpus)
+
+        mem = node_data.get("resources_available", {}).get("mem", "0gb").upper()
+
+        node = Node(node_name, state, cpus, mem, queue)
+        nodes.append(node)
+
+    return nodes
+
+
+def is_node_actually_free(node_name, node_data):
+    """Check if a node is truly free:
+
+    1. State must be 'free' 2. No jobs should be assigned to it (jobs list should be
+    empty or non-existent) 3. resources_assigned should be empty or have zero values
+    """
+    if node_data.get("state") != "free":
+        return False
+
+    jobs = node_data.get("jobs", [])
+    if jobs:
+        return False
+
+    resources_assigned = node_data.get("resources_assigned", {})
+
+    if resources_assigned:
+        assigned_ncpus = resources_assigned.get("ncpus", 0)
+        if assigned_ncpus > 0:
+            return False
+
+        assigned_mem = resources_assigned.get("mem", "0kb")
+        if assigned_mem and assigned_mem != "0kb":
+            return False
+
+    return True
+
+
+def execute_pbsnodes():
+    output = subprocess.check_output(
+        ["ssh", "jupiter", "pbsnodes", "-a", "-F", "json"],
+        text=True,
+        stderr=subprocess.STDOUT,
+    )
+    return json.loads(output)
+
+
+def execute_qstat(username: str) -> str:
+    try:
+        return subprocess.check_output(
+            ["ssh", "jupiter", "qstat", "-u", username],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def execute_pueue() -> dict:
+    output = subprocess.check_output(
+        ["ssh", BABEL_HOST, "pueue", "status", "--json"],
+        text=True,
+        stderr=subprocess.STDOUT,
+    )
+    data = json.loads(output)
+    tasks = data.get("tasks", {})
+
+    def _status(s):
+        return s if isinstance(s, str) else next(iter(s), "Unknown")
+
+    running = sum(1 for t in tasks.values() if _status(t.get("status", "")) == "Running")
+    queued = sum(1 for t in tasks.values() if _status(t.get("status", "")) == "Queued")
+    return {"running": running, "queued": queued}
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Check free nodes in jupiter",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                    # Show summary of all nodes
+  %(prog)s --all/-a           # Show all free nodes sorted by queue
+  %(prog)s --json             # Output raw JSON (for scripting/qprep)
+        """,
+    )
+
+    parser.add_argument(
+        "-a", "--all", action="store_true", help="show all free nodes sorted by queue"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="output structured JSON instead of tables"
+    )
+
+    return parser.parse_args()
+
+
+def show_free_nodes_table(nodes, json_data, console):
+    """Show table of all truly free nodes sorted by queue and name."""
+
+    free_nodes = []
+    for node in nodes:
+        node_data = json_data.get("nodes", {}).get(node.name)
+        if node_data and is_node_actually_free(node.name, node_data):
+            free_nodes.append(node)
+
+    free_nodes.sort(key=lambda x: (x.queue, x.name))
+
+    if not free_nodes:
+        console.print("[yellow]No free nodes available.[/yellow]")
+        return
+
+    table = Table(box=box.ROUNDED, title="Free Nodes")
+    table.add_column("Node Name", style="cyan")
+    table.add_column("Queue", style="green")
+    table.add_column("CPUs", justify="right", style="blue")
+    table.add_column("Memory", justify="right", style="magenta")
+
+    for node in free_nodes:
+        table.add_row(node.name, node.queue, str(node.cpus), node.mem)
+
+    console.print(table)
+    console.print(f"\nTotal free nodes: [bold green]{len(free_nodes)}[/bold green]")
+
+
+def build_queue_summary_table(nodes, json_data):
+    """Build summary table with free nodes per queue.
+
+    Returns (table, summary_str, queue_stats).
+    queue_stats: {"small": {"free": 1, "busy": 4, "total": 5}, ...}
+    """
+
+    queue_stats = {}
+    for node in nodes:
+        queue = node.queue
+        if queue not in queue_stats:
+            queue_stats[queue] = {"total": 0, "free": 0, "busy": 0}
+
+        queue_stats[queue]["total"] += 1
+
+        node_data = json_data.get("nodes", {}).get(node.name)
+        if node_data and is_node_actually_free(node.name, node_data):
+            queue_stats[queue]["free"] += 1
+        else:
+            queue_stats[queue]["busy"] += 1
+
+    table = Table(box=box.ROUNDED, title="Cluster")
+    table.add_column("Queue", style="cyan")
+    table.add_column("Free", justify="center")
+    table.add_column("Busy", justify="center")
+    table.add_column("Total", justify="center")
+    table.add_column("Free %", justify="right")
+
+    for queue, stats in sorted(queue_stats.items()):
+        free = stats["free"]
+        busy = stats["busy"]
+        total = stats["total"]
+        percentage = (free / total * 100) if total > 0 else 0
+
+        free_str = f"[green]{free}[/green]" if free > 0 else f"[red]{free}[/red]"
+        busy_str = f"[yellow]{busy}[/yellow]" if busy > 0 else str(busy)
+
+        table.add_row(queue, free_str, busy_str, str(total), f"{percentage:.1f}%")
+
+    total_nodes = len(nodes)
+    total_free = sum(
+        1
+        for node in nodes
+        if json_data.get("nodes", {}).get(node.name)
+        and is_node_actually_free(node.name, json_data["nodes"][node.name])
+    )
+    overall_percentage = (total_free / total_nodes * 100) if total_nodes > 0 else 0
+    summary = f" [green]{total_free}[/green] free out of {total_nodes} ({overall_percentage:.1f}%)"
+
+    return table, summary, queue_stats
+
+
+def build_user_table(qstat_data: str, username: str):
+    """Build user job summary table.
+
+    Returns (table, user_stats).
+    user_stats: {"small": {"used": 2, "free": 3, "queued": 0}, ...}
+    """
+    lines = qstat_data.splitlines()
+
+    queues = [
+        UserNodes("big"),
+        UserNodes("small"),
+        UserNodes("freq"),
+        UserNodes("fast"),
+    ]
+
+    for line in lines[5:]:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        linequeue = parts[2]
+        status = parts[-2]
+        for queue in queues:
+            if queue.queue == linequeue:
+                if status == "R":
+                    queue.add_used_node()
+                elif status == "Q":
+                    queue.add_queued_jobs()
+
+    for queue in queues:
+        queue.calc_free_nodes(MAX_JOBS[queue.queue])
+
+    table = Table(box=box.ROUNDED, title=username)
+    table.add_column("Queue", style="cyan", justify="left")
+    table.add_column("Used", justify="center")
+    table.add_column("Free", justify="center")
+    table.add_column("Queued", justify="center")
+
+    user_stats = {}
+    for data in queues:
+        free_str = (
+            f"[green]{data.free_nodes}[/green]"
+            if data.free_nodes > 0
+            else f"[red]{data.free_nodes}[/red]"
+        )
+        if data.used_nodes == 0:
+            used_str = f"[green]{data.used_nodes}[/green]"
+        elif data.used_nodes != MAX_JOBS[data.queue]:
+            used_str = f"[yellow]{data.used_nodes}[/yellow]"
+        else:
+            used_str = f"[red]{data.used_nodes}[/red]"
+
+        table.add_row(data.queue, used_str, free_str, str(data.queued_jobs))
+
+        user_stats[data.queue] = {
+            "used": data.used_nodes,
+            "free": data.free_nodes,
+            "queued": data.queued_jobs,
+        }
+
+    return table, user_stats
+
+
+def build_babel_table(babel_data: dict) -> Table:
+    running = babel_data["running"]
+    queued = babel_data["queued"]
+
+    table = Table(box=box.ROUNDED, title=BABEL_HOST)
+    table.add_column("Running", justify="center")
+    table.add_column("Queued", justify="center")
+
+    run_str = f"[yellow]{running}[/yellow]" if running > 0 else f"[green]{running}[/green]"
+    q_str = f"[yellow]{queued}[/yellow]" if queued > 0 else f"[green]{queued}[/green]"
+    table.add_row(run_str, q_str)
+
+    return table
+
+
+def main():
+    console = Console()
+    args = parse_arguments()
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        f_nodes = executor.submit(execute_pbsnodes)
+        f_me = executor.submit(execute_qstat, MY_USER)
+        f_friend = executor.submit(execute_qstat, FRIEND_USER)
+        f_babel = executor.submit(execute_pueue)
+
+        try:
+            json_data = f_nodes.result()
+        except Exception as e:
+            console.print(f"[bold red]Error fetching node data: {e}[/bold red]")
+            return
+
+        nodes = parse_pbsnodes(json_data)
+
+        qstat_me = ""
+        try:
+            qstat_me = f_me.result()
+        except Exception:
+            pass
+
+        qstat_friend = ""
+        try:
+            qstat_friend = f_friend.result()
+        except Exception:
+            pass
+
+        babel_data = None
+        try:
+            babel_data = f_babel.result()
+        except Exception:
+            pass
+
+    if args.all:
+        show_free_nodes_table(nodes, json_data, console)
+        return
+
+    cluster_table, summary, queue_stats = build_queue_summary_table(nodes, json_data)
+    my_table, my_stats = build_user_table(qstat_me, MY_USER)
+    friend_table, friend_stats = build_user_table(qstat_friend, FRIEND_USER)
+
+    if args.json:
+        output = {
+            "cluster": {"queues": queue_stats},
+            "users": {
+                MY_USER: my_stats,
+                FRIEND_USER: friend_stats,
+            },
+            "babel": babel_data,
+        }
+        print(json.dumps(output))
+        return
+
+    tables = [cluster_table, my_table, friend_table]
+    if babel_data is not None:
+        tables.append(build_babel_table(babel_data))
+
+    console.print(Columns(tables, padding=(0, 2)))
+    console.print(summary)
+
+
+if __name__ == "__main__":
+    main()
