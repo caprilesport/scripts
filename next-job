@@ -1,0 +1,311 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#     "rich",
+#     "typer",
+# ]
+# ///
+
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+SYNCED_JOBS_FILE = Path.home() / ".synced_jobs"
+SYNCING_RE = re.compile(r"Syncing job .+? \(([a-f0-9]{7,})\)")
+
+console = Console(stderr=True)
+app = typer.Typer(add_completion=False, no_args_is_help=False)
+
+
+# --- Queue file ---
+
+def read_queue() -> list[str]:
+    if not SYNCED_JOBS_FILE.exists():
+        return []
+    return [l.strip() for l in SYNCED_JOBS_FILE.read_text().splitlines() if l.strip()]
+
+
+def write_queue(ids: list[str]) -> None:
+    SYNCED_JOBS_FILE.write_text("\n".join(ids) + ("\n" if ids else ""))
+
+
+# --- recli helpers ---
+
+def recli_info(job_id: str) -> Optional[dict]:
+    result = subprocess.run(
+        ["recli", "info", job_id, "--json"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def recli_status_all() -> list[dict]:
+    result = subprocess.run(
+        ["recli", "status", "--all", "--json"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+
+
+def build_job_map(queue: list[str]) -> dict[str, dict]:
+    """One recli call → map of short_id → job info for all IDs in queue."""
+    all_jobs = recli_status_all()
+    queue_set = set(queue)
+    return {job["uuid"][:7]: job for job in all_jobs if job["uuid"][:7] in queue_set}
+
+
+# --- Formatting helpers ---
+
+def fmt_time(iso: Optional[str]) -> str:
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return iso[:16]
+
+
+def short_path(path_str: str, n: int = 3) -> str:
+    if not path_str:
+        return "?"
+    parts = Path(path_str).parts
+    return str(Path(*parts[-n:])) if len(parts) >= n else path_str
+
+
+# --- Pull mode ---
+
+def pull_mode() -> None:
+    candidates: list[str] = []
+    errored: set[str] = set()
+
+    for line in sys.stdin:
+        sys.stderr.write(line)
+        sys.stderr.flush()
+
+        m = SYNCING_RE.search(line)
+        if m:
+            candidates.append(m.group(1))
+            continue
+
+        if "ERROR" in line:
+            for cid in candidates:
+                if cid in line:
+                    errored.add(cid)
+
+    to_add = [cid for cid in candidates if cid not in errored]
+
+    if to_add:
+        with open(SYNCED_JOBS_FILE, "a") as f:
+            for cid in to_add:
+                f.write(cid + "\n")
+
+    msg = f"\n→ Added {len(to_add)} job(s) to queue"
+    if errored:
+        msg += f" ({len(errored)} skipped due to errors)"
+    console.print(msg)
+
+
+# --- Subcommands ---
+
+@app.command(name="next")
+def cmd_next():
+    """Pop the next job and print its work_dir to stdout (for fish to cd into)."""
+    queue = read_queue()
+    if not queue:
+        console.print("[yellow]Queue is empty.[/yellow]")
+        raise typer.Exit(1)
+
+    job_id = queue[0]
+    info = recli_info(job_id)
+    if info is None:
+        console.print(f"[red]Could not fetch info for {job_id}.[/red]")
+        raise typer.Exit(1)
+
+    write_queue(queue[1:])
+    console.print(f"[dim]→ {info['filename']} ({job_id})  —  {len(queue) - 1} remaining[/dim]")
+    print(info["work_dir"])  # stdout only: captured by fish for pushd
+
+
+@app.command(name="peek")
+def cmd_peek():
+    """Show next job details without removing it from the queue."""
+    queue = read_queue()
+    if not queue:
+        console.print("[yellow]Queue is empty.[/yellow]")
+        raise typer.Exit(1)
+
+    job_id = queue[0]
+    info = recli_info(job_id)
+    if info is None:
+        console.print(f"[red]Could not fetch info for {job_id}.[/red]")
+        raise typer.Exit(1)
+
+    tags_str = ", ".join(info.get("tags", [])) or "—"
+    remaining = len(queue) - 1
+
+    body = "\n".join([
+        f"[bold]Filename[/bold]    {info['filename']}",
+        f"[bold]Work dir[/bold]    {info['work_dir']}",
+        f"[bold]Remote  [/bold]    {info['remote']}",
+        f"[bold]Tags    [/bold]    {tags_str}",
+        f"[bold]Submitted[/bold]   {fmt_time(info.get('submit_time'))}",
+        f"[bold]Synced  [/bold]    {fmt_time(info.get('sync_time'))}",
+        "",
+        f"[dim]{remaining} more in queue[/dim]",
+    ])
+
+    console.print(Panel(
+        body,
+        title=f"[cyan bold]{job_id}[/cyan bold]",
+        border_style="cyan",
+        padding=(1, 2),
+    ))
+
+
+@app.command(name="skip")
+def cmd_skip():
+    """Move the next job to the end of the queue."""
+    queue = read_queue()
+    if not queue:
+        console.print("[yellow]Queue is empty.[/yellow]")
+        return
+
+    job_id = queue[0]
+    write_queue(queue[1:] + [job_id])
+    console.print(f"[yellow]Skipped[/yellow] {job_id} → end of queue  ({len(queue)} total)")
+
+
+@app.command(name="list")
+def cmd_list():
+    """Show all jobs currently in the queue."""
+    queue = read_queue()
+    if not queue:
+        console.print("[yellow]Queue is empty.[/yellow]")
+        return
+
+    job_map = build_job_map(queue)
+
+    table = Table(box=box.ROUNDED, title=f"Queue  ({len(queue)} jobs)")
+    table.add_column("#", style="dim", justify="right", width=3)
+    table.add_column("ID", style="cyan", width=8)
+    table.add_column("Filename", style="green")
+    table.add_column("Work dir", style="blue")
+    table.add_column("Tags")
+
+    for i, job_id in enumerate(queue, 1):
+        info = job_map.get(job_id, {})
+        table.add_row(
+            str(i),
+            job_id,
+            info.get("filename", "?"),
+            short_path(info.get("work_dir", ""), n=3),
+            ", ".join(info.get("tags", [])) or "—",
+        )
+
+    console.print(table)
+
+
+@app.command(name="sort")
+def cmd_sort(
+    by: str = typer.Option("dir", "--by", help="Sort key: dir, name, remote, tags"),
+):
+    """Reorder the queue in place."""
+    queue = read_queue()
+    if not queue:
+        console.print("[yellow]Queue is empty.[/yellow]")
+        return
+
+    job_map = build_job_map(queue)
+
+    def sort_key(job_id: str):
+        info = job_map.get(job_id, {})
+        if by == "dir":
+            wd = info.get("work_dir", "")
+            return (str(Path(wd).parent) if wd else "", info.get("filename", ""))
+        elif by == "name":
+            return info.get("filename", "")
+        elif by == "remote":
+            return info.get("remote", "")
+        elif by == "tags":
+            tags = info.get("tags", [])
+            return tags[0] if tags else ""
+        return ""
+
+    write_queue(sorted(queue, key=sort_key))
+    console.print(f"[green]Sorted[/green] by {by}.")
+
+
+@app.command(name="remove")
+def cmd_remove(
+    job_id: str = typer.Argument(..., help="Job ID prefix to remove."),
+):
+    """Remove a job from the queue by ID prefix."""
+    queue = read_queue()
+    new_queue = [jid for jid in queue if not jid.startswith(job_id)]
+    removed = len(queue) - len(new_queue)
+
+    if removed == 0:
+        console.print(f"[yellow]No job matching '{job_id}' in queue.[/yellow]")
+        return
+
+    write_queue(new_queue)
+    console.print(f"[green]Removed {removed} job(s).[/green]")
+
+
+@app.command(name="add")
+def cmd_add(
+    job_id: str = typer.Argument(..., help="Job ID to append to the queue."),
+):
+    """Manually add a job to the end of the queue."""
+    queue = read_queue()
+    if job_id in queue:
+        console.print(f"[yellow]{job_id} is already in the queue.[/yellow]")
+        return
+    write_queue(queue + [job_id])
+    console.print(f"[green]Added {job_id} to queue.[/green]")
+
+
+@app.command(name="clear")
+def cmd_clear():
+    """Clear all jobs from the queue."""
+    count = len(read_queue())
+    write_queue([])
+    console.print(f"[green]Cleared {count} job(s).[/green]")
+
+
+# --- Entry point ---
+
+@app.callback(invoke_without_command=True)
+def default(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        if not sys.stdin.isatty():
+            pull_mode()
+        else:
+            typer.echo(ctx.get_help())
+            raise typer.Exit()
+
+
+if __name__ == "__main__":
+    app()
