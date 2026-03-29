@@ -111,6 +111,6 @@ elif [[ "$2" > " " ]] ; then
 fi
 
 echo "RUN: $type \"$source\" to \"$destination\""
-run="rclone $type $flags \"$source\" \"$destination\""
+run="rclone --multi-thread-streams=16 $type $flags \"$source\" \"$destination\""
 echo "Command: $run"
 eval $run
