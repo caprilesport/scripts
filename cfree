@@ -12,7 +12,8 @@ import argparse
 import concurrent.futures
 import json
 import subprocess
-from dataclasses import dataclass
+import sys
+from dataclasses import asdict, dataclass
 
 from rich import box
 from rich.columns import Columns
@@ -24,7 +25,7 @@ FRIEND_USER = "colaco"
 BABEL_HOST = "babel"
 
 MAX_JOBS = {
-    "freq": 2,
+    "freq": 5,
     "big": 4,
     "small": 5,
     "fast": 1,
@@ -118,14 +119,11 @@ def execute_pbsnodes():
 
 
 def execute_qstat(username: str) -> str:
-    try:
-        return subprocess.check_output(
-            ["ssh", "jupiter", "qstat", "-u", username],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except subprocess.CalledProcessError:
-        return ""
+    return subprocess.check_output(
+        ["ssh", "jupiter", "qstat", "-u", username],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def execute_pueue() -> dict:
@@ -147,13 +145,31 @@ def execute_pueue() -> dict:
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Check free nodes in jupiter",
+        description="Check free nodes and per-user job slots on jupiter.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
-  %(prog)s                    # Show summary of all nodes
-  %(prog)s --all/-a           # Show all free nodes sorted by queue
-  %(prog)s --json             # Output raw JSON (for scripting/qprep)
+  %(prog)s                    # Summary tables
+  %(prog)s -a                 # Table of every free node
+  %(prog)s --json             # Everything as one JSON object on stdout
+
+JSON schema (--json; --all is ignored, free_nodes is always included):
+  {{
+    "cluster": {{
+      "queues": {{"<queue>": {{"free": int, "busy": int, "total": int}}}},
+      "total_free": int, "total_nodes": int
+    }},
+    "free_nodes": [{{"name": str, "queue": str, "cpus": int, "mem": str}}],
+    "users": {{
+      "<user>": {{"<queue>": {{"used": int, "free": int, "queued": int, "max": int}}}} | null
+    }},
+    "errors": [str]
+  }}
+  "free" under users = job slots left for that user (max - used; per-user limits
+  {MAX_JOBS}). A user is null if their qstat call failed; the reason is in "errors".
+
+Exit codes: 0 ok, 1 if node data could not be fetched (JSON mode prints
+{{"error": "..."}} to stdout), 2 on bad arguments.
         """,
     )
 
@@ -161,22 +177,26 @@ Examples:
         "-a", "--all", action="store_true", help="show all free nodes sorted by queue"
     )
     parser.add_argument(
-        "--json", action="store_true", help="output structured JSON instead of tables"
+        "--json", action="store_true", help="print one JSON object to stdout instead of tables"
     )
 
     return parser.parse_args()
 
 
-def show_free_nodes_table(nodes, json_data, console):
-    """Show table of all truly free nodes sorted by queue and name."""
-
-    free_nodes = []
-    for node in nodes:
-        node_data = json_data.get("nodes", {}).get(node.name)
-        if node_data and is_node_actually_free(node.name, node_data):
-            free_nodes.append(node)
-
+def get_free_nodes(nodes, json_data):
+    """Truly free nodes, sorted by queue and name."""
+    free_nodes = [
+        node
+        for node in nodes
+        if (node_data := json_data.get("nodes", {}).get(node.name))
+        and is_node_actually_free(node.name, node_data)
+    ]
     free_nodes.sort(key=lambda x: (x.queue, x.name))
+    return free_nodes
+
+
+def show_free_nodes_table(free_nodes, console):
+    """Show table of all truly free nodes sorted by queue and name."""
 
     if not free_nodes:
         console.print("[yellow]No free nodes available.[/yellow]")
@@ -304,6 +324,7 @@ def build_user_table(qstat_data: str, username: str):
             "used": data.used_nodes,
             "free": data.free_nodes,
             "queued": data.queued_jobs,
+            "max": MAX_JOBS[data.queue],
         }
 
     return table, user_stats
@@ -327,65 +348,70 @@ def build_babel_table(babel_data: dict) -> Table:
 def main():
     console = Console()
     args = parse_arguments()
+    errors = []
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         f_nodes = executor.submit(execute_pbsnodes)
-        f_me = executor.submit(execute_qstat, MY_USER)
-        f_friend = executor.submit(execute_qstat, FRIEND_USER)
-        f_babel = executor.submit(execute_pueue)
+        f_qstat = {user: executor.submit(execute_qstat, user) for user in (MY_USER, FRIEND_USER)}
+        # f_babel = executor.submit(execute_pueue)
 
         try:
             json_data = f_nodes.result()
         except Exception as e:
-            console.print(f"[bold red]Error fetching node data: {e}[/bold red]")
-            return
+            msg = f"could not fetch node data: {e}"
+            if args.json:
+                print(json.dumps({"error": msg}))
+            else:
+                Console(stderr=True).print(f"[bold red]Error: {msg}[/bold red]")
+            sys.exit(1)
 
-        nodes = parse_pbsnodes(json_data)
+        qstat = {}
+        for user, fut in f_qstat.items():
+            try:
+                qstat[user] = fut.result()
+            except Exception as e:
+                qstat[user] = None
+                errors.append(f"qstat -u {user} failed: {e}")
 
-        qstat_me = ""
-        try:
-            qstat_me = f_me.result()
-        except Exception:
-            pass
+    nodes = parse_pbsnodes(json_data)
+    free_nodes = get_free_nodes(nodes, json_data)
 
-        qstat_friend = ""
-        try:
-            qstat_friend = f_friend.result()
-        except Exception:
-            pass
-
-        babel_data = None
-        try:
-            babel_data = f_babel.result()
-        except Exception:
-            pass
-
-    if args.all:
-        show_free_nodes_table(nodes, json_data, console)
+    if args.all and not args.json:
+        show_free_nodes_table(free_nodes, console)
         return
 
     cluster_table, summary, queue_stats = build_queue_summary_table(nodes, json_data)
-    my_table, my_stats = build_user_table(qstat_me, MY_USER)
-    friend_table, friend_stats = build_user_table(qstat_friend, FRIEND_USER)
+    user_tables, user_stats = {}, {}
+    for user, data in qstat.items():
+        if data is None:
+            user_stats[user] = None
+        else:
+            user_tables[user], user_stats[user] = build_user_table(data, user)
 
     if args.json:
         output = {
-            "cluster": {"queues": queue_stats},
-            "users": {
-                MY_USER: my_stats,
-                FRIEND_USER: friend_stats,
+            "cluster": {
+                "queues": queue_stats,
+                "total_free": len(free_nodes),
+                "total_nodes": len(nodes),
             },
-            "babel": babel_data,
+            "free_nodes": [
+                {k: v for k, v in asdict(n).items() if k != "state"} for n in free_nodes
+            ],
+            "users": user_stats,
+            "errors": errors,
         }
-        print(json.dumps(output))
+        print(json.dumps(output, indent=2))
         return
 
-    tables = [cluster_table, my_table, friend_table]
-    if babel_data is not None:
-        tables.append(build_babel_table(babel_data))
+    tables = [cluster_table, *user_tables.values()]
+    # if babel_data is not None:
+    #     tables.append(build_babel_table(babel_data))
 
     console.print(Columns(tables, padding=(0, 2)))
     console.print(summary)
+    for err in errors:
+        Console(stderr=True).print(f"[yellow]Warning: {err}[/yellow]")
 
 
 if __name__ == "__main__":

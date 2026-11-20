@@ -5,6 +5,11 @@
 #            gdrive push/pull check   to check differences
 #
 
+if ! command -v rclone >/dev/null; then
+  echo "ERROR: rclone not found on PATH. Quitting."
+  exit 1
+fi
+
 local=/home/vport/projects/doc
 remote=Drive:/Chem/doutorado/projects
 
@@ -56,25 +61,30 @@ fi
 # Ignore files listed in .gdriveignore files of all subfolders
 #
 
-ignore_files=`find "$current_dir" -name .gdriveignore`
+if [[ ! -f "$ignore_base" ]]; then
+  echo "ERROR: base ignore file $ignore_base not found. Quitting."
+  exit 1
+fi
+
+# One path per array element, so paths with spaces stay whole
+mapfile -t ignore_files < <(find "$current_dir" -name .gdriveignore \
+  -not -path '*/.venv/*' -not -path '*/node_modules/*')
 igTMP=`pwd`/.gdriveignoreTMP
 echo "# $ignore_base" > "$igTMP"
-cat $ignore_base >> "$igTMP"
+cat "$ignore_base" >> "$igTMP"
 echo "# This file:" >> "$igTMP"
 echo ".gdriveignoreTMP" >> "$igTMP"
-if [[ $ignore_files ]]; then
+if (( ${#ignore_files[@]} )); then
     echo "Found .gdriveignore files."
-    for file in "$ignore_files" ; do
+    for file in "${ignore_files[@]}" ; do
       echo "# $file" >> "$igTMP"
       dir=${file#"$current_dir"}
       dir=${dir%".gdriveignore"}
-      list=`cat $file`
-      for str in "$list" ; do
-        n=`echo -n "$str" | wc -m`
-        if [[ $n -ne 0 ]]; then 
-          echo "$dir$str" >> "$igTMP"
-        fi
-      done
+      # Prefix every pattern line with the file's folder; skip blanks and comments
+      while IFS= read -r str || [[ -n "$str" ]]; do
+        [[ -z "${str//[[:space:]]/}" || "$str" == \#* ]] && continue
+        echo "$dir$str" >> "$igTMP"
+      done < "$file"
     done
 else
     echo "No .gdriveignore files found"

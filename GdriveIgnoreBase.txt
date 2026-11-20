@@ -1,0 +1,14 @@
+# rclone filter patterns excluded from every `gdrive` push/pull.
+# Patterns without a leading / match at any depth; dir/** excludes a directory's contents.
+
+# ORCA binaries and scratch (regenerable)
+*.gbw
+*.densities
+*.tmp
+*.tmp.*
+
+# Python and Node environments, caches
+.venv/**
+node_modules/**
+__pycache__/**
+.ruff_cache/**

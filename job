@@ -33,42 +33,70 @@ remove_path() {
     export $var_name="$current_val"
 }
 
-# Default setup (ORCA 5 matches your default system environment)
-orca_executable="$orca_5_path"
+usage() {
+    cat <<USAGE
+Usage: $(basename "$0") [-v 5|6] [-h] <input_file>
+
+Run ORCA on <input_file> in the current directory, writing <stem>.out next to it.
+ORCA runs with --use-hwthread-cpus, so MPI may use every hardware thread.
+
+Options:
+  -v 5|6   ORCA version (default: 6). Each version is paired with its OpenMPI:
+             6 -> $orca_6_path (OpenMPI 4.1.8)
+             5 -> $orca_5_path (system OpenMPI 4.1.1)
+  -h       Show this help and exit.
+
+Typical use through pueue:
+  pueue add -- job mol.inp
+USAGE
+}
+
+# Default: ORCA 6
+version="6"
 
 # Parse flags
-while getopts ":v:" opt; do
+while getopts ":v:h" opt; do
   case $opt in
     v)
-      if [[ $OPTARG == "6" ]]; then
-        # --- SWITCH TO ORCA 6 ENVIRONMENT ---
-        orca_executable="$orca_6_path"
-
-        # 1. Remove default OpenMPI 4.1.1 from environment
-        remove_path "PATH" "$MPI_411_HOME/bin"
-        remove_path "LD_LIBRARY_PATH" "$MPI_411_HOME/lib"
-
-        # 2. Add OpenMPI 4.1.8 to environment (Prepend to ensure priority)
-        export PATH="$MPI_418_HOME/bin:$PATH"
-        export LD_LIBRARY_PATH="$MPI_418_HOME/lib:$LD_LIBRARY_PATH"
-
-      elif [[ $OPTARG != "5" ]]; then
-        echo "Unsupported ORCA version. Use 6 or 5 (default)."
+      if [[ $OPTARG != "5" && $OPTARG != "6" ]]; then
+        echo "Unsupported ORCA version: $OPTARG. Use 6 (default) or 5." >&2
         exit 1
       fi
+      version=$OPTARG
+      ;;
+    h)
+      usage
+      exit 0
       ;;
     \?)
-      echo "Invalid option: -$OPTARG"
+      echo "Invalid option: -$OPTARG" >&2
+      usage >&2
       exit 1
       ;;
   esac
 done
 
+if [[ $version == "6" ]]; then
+    # --- ORCA 6 ENVIRONMENT ---
+    orca_executable="$orca_6_path"
+
+    # 1. Remove default OpenMPI 4.1.1 from environment
+    remove_path "PATH" "$MPI_411_HOME/bin"
+    remove_path "LD_LIBRARY_PATH" "$MPI_411_HOME/lib"
+
+    # 2. Add OpenMPI 4.1.8 to environment (Prepend to ensure priority)
+    export PATH="$MPI_418_HOME/bin:$PATH"
+    export LD_LIBRARY_PATH="$MPI_418_HOME/lib:$LD_LIBRARY_PATH"
+else
+    # --- ORCA 5: system default environment (OpenMPI 4.1.1) ---
+    orca_executable="$orca_5_path"
+fi
+
 # Shift arguments to get the input file
 shift $((OPTIND - 1))
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 [-v 5|6] <input_file>"
+    usage >&2
     exit 1
 fi
 
