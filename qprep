@@ -16,7 +16,8 @@ import click
 # --- Cluster Configurations ---
 CLUSTER_CONFIG = {
     "jupiter": {
-        "scheduler": "pbs",
+        "scheduler": "PBS",
+        "script_ext": ".pbs",
         "orca_path": "/home/Softwares/orca6.1.0/orca",
         "queues": {
             "small": {"max_procs": 8, "mem_gb": 11},
@@ -24,68 +25,28 @@ CLUSTER_CONFIG = {
             "freq": {"max_procs": 8, "mem_gb": 29},
             "big": {"max_procs": 16, "mem_gb": 26},
         },
-        "default_queue": "small",
         "walltime": "720:00:00",
-        "submission_command": "qsub",
         "recli_remote": "jupiter",
     },
-    "colaco": {
-        "scheduler": "pbs",
-        "orca_path": "/home/Softwares/orca5.0.4/orca",
-        "queues": {
-            "small": {"max_procs": 8, "mem_gb": 11},
-            "fast": {"max_procs": 8, "mem_gb": 7},
-            "freq": {"max_procs": 8, "mem_gb": 29},
-            "big": {"max_procs": 16, "mem_gb": 26},
-        },
-        "default_queue": "small",
-        "walltime": "720:00:00",
-        "submission_command": "qsub",
-        "recli_remote": "colaco",
-    },
-    "loboc": {
-        "scheduler": "pbs",
-        "orca_path": "/home/users/vport/bin/orca_5_0_4/orca",
-        "default_walltime": "60:00:00",
-        "submission_command": "qsub",
-        "modules": ["gcc/11.2.0", "openmpi-gnu/4.1.1"],
-    },
-    "newton": {
-        "scheduler": "slurm",
-        "orca_paths": {
-            "5": "/opt/orca/orca-5.0.4/orca",
-            "6": "/opt/orca/orca-6.1.0/orca",
-        },
-        "default_orca_version": "5",
-        "walltime": "4-00:00:00",
-        "partition": "long",
-        "mem_gb": 30,
-        "submission_command": "sbatch",
-        "modules": ["fermi/openmpi-4.1.6"],
-    },
     "njup": {
-        "scheduler": "slurm",
+        "scheduler": "Slurm",
+        "script_ext": ".slurm",
         "orca_paths": {
             "5": "/home/softwares/orcas/orca_5.0.4/orca",
             "6": "/home/softwares/orcas/orca_6.1.1/orca",
         },
         "orca_modules": {"5": "orca/5.0.4", "6": "orca/6.1.1"},
         "default_orca_version": "6",
-        # Only cpu-big has nodes for now; add cpu-small (8p/15gb) and
-        # cpu-freq (8p/31gb) here when they come online.
+        # Only cpu-big has nodes for now; add cpu-small and cpu-freq here
+        # when they come online. mem_gb must stay below the nodes'
+        # RealMemory (`scontrol show node`): Slurm reads G as 1024 MB and
+        # rejects larger requests. cpu-big nodes have RealMemory=63000 MB.
         "queues": {
-            "cpu-big": {"max_procs": 16, "mem_gb": 64},
+            "cpu-big": {"max_procs": 16, "mem_gb": 61},
         },
         "default_queue": "cpu-big",
         "walltime": "30-00:00:00",
-        "submission_command": "sbatch",
         "recli_remote": "njup",
-    },
-    "babel": {
-        "default_orca_version": "6",
-        "max_procs": 16,
-        "submission_command": "source",
-        "recli_remote": "babel",
     },
 }
 
@@ -115,7 +76,7 @@ cd ${{TDIR}}
 
 # Log the job start details
 echo "start of job:" `date` > ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
-echo "nboenv:" $NBOEXE > ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
+echo "nboenv:" $NBOEXE >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
 echo "Job started from ${{PBS_O_HOST}}, running on $(hostname) in ${{PBS_O_WORKDIR}} " >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
 echo "temporary directory: ${{TDIR}}" >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
 
@@ -127,57 +88,6 @@ echo "final of job:" `date` >> $PBS_O_WORKDIR/{job_name}.job.$JOB_ID
 # copy the archives from temporary directory to submit directory
 mv /rascunho/${{USER}}-${{PBS_JOBID}}/!(*tmp*) ${{PBS_O_WORKDIR}}/
 rm -rf /rascunho/${{USER}}-${{PBS_JOBID}}
-"""
-
-PBS_LOBOC_TEMPLATE = """#!/bin/bash
-#PBS -l select=1:ncpus={nprocs}:mpiprocs={nprocs}
-#PBS -l walltime={walltime}
-#PBS -V
-
-module load {modules}
-
-JOB_ID=${{PBS_JOBID%.*}}
-
-# Log the job start details
-echo "start of job:" `date` > ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
-echo "Job started from ${{PBS_O_HOST}}, running on $(hostname) in ${{PBS_O_WORKDIR}} " >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
-
-cd ${{PBS_O_WORKDIR}}
-
-# Run the Orca job
-{orca_path} $PBS_O_WORKDIR/{input_filename} > $PBS_O_WORKDIR/{input_stem}.out || true
-
-echo "final of job:" `date` >> ${{PBS_O_WORKDIR}}/{job_name}.job.${{JOB_ID}}
-"""
-
-SLURM_NEWTON_TEMPLATE = """#!/bin/bash
-#SBATCH --job-name={job_name}
-#SBATCH -o slurm.%j.out
-#SBATCH -e slurm.%j.err
-#SBATCH -N 1
-#SBATCH --ntasks={nprocs}
-#SBATCH --mem={memory_gb}G
-#SBATCH -t {walltime}
-#SBATCH --no-requeue
-#SBATCH -p {partition}
-
-module load {modules}
-
-echo "########################################################"
-echo "## ORCA Job Submission Script"
-echo "# Job name: {job_name}"
-echo "# ORCA version: {orca_version_label}"
-echo "# ORCA executable: {orca_exec}"
-echo "# Number of cores: {nprocs}"
-echo "# Total memory: {memory_gb} GB"
-echo "# Job started at: $(date)"
-echo "########################################################"
-
-{orca_exec} {input_filename} > {input_stem}.out
-
-echo "########################################################"
-echo "# ORCA job finished at: $(date)"
-echo "########################################################"
 """
 
 # Raw string: the backslashes are bash line continuations / find escapes.
@@ -252,14 +162,6 @@ export RSH_COMMAND="/usr/bin/ssh -x"
 {orca_exec} "{input_filename}" > "{input_stem}.out"
 """
 
-SCRIPT_EXT = {
-    "jupiter": ".pbs",
-    "colaco": ".pbs",
-    "loboc": ".pbs",
-    "newton": ".slurm",
-    "njup": ".slurm",
-    "babel": ".pueue",
-}
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -405,21 +307,24 @@ def process_file(
     input_stem = input_file.stem
     content = input_file.read_text()
 
-    parsed = parse_orca_input(content)
-    nprocs = parsed.get("nprocs")
-
-    if remote != "babel" and not nprocs:
+    nprocs = parse_orca_input(content)["nprocs"]
+    if not nprocs:
         raise JobError("could not find PAL<n> or '%pal nprocs <n>' in input file")
 
-    if remote in ("jupiter", "colaco"):
+    if remote == "jupiter":
         resolved_queue = queue or ("big" if nprocs == 16 else "small")
-        content, nprocs = fit_nprocs_to_queue(
-            input_file, content, nprocs, resolved_queue,
-            config["queues"][resolved_queue]["max_procs"], upgrade_nprocs, dry_run,
-        )
-        memory_gb = config["queues"][resolved_queue]["mem_gb"]
-        log = f"queue={resolved_queue} nprocs={nprocs} mem={memory_gb}gb"
+    else:
+        resolved_queue = queue or config["default_queue"]
 
+    content, nprocs = fit_nprocs_to_queue(
+        input_file, content, nprocs, resolved_queue,
+        config["queues"][resolved_queue]["max_procs"], upgrade_nprocs, dry_run,
+    )
+    # Always request the queue's full memory; %maxcore is ignored.
+    memory_gb = config["queues"][resolved_queue]["mem_gb"]
+    log = f"queue={resolved_queue} nprocs={nprocs} mem={memory_gb}gb"
+
+    if remote == "jupiter":
         job_script_content = PBS_JUPITER_TEMPLATE.format(
             nprocs=nprocs,
             walltime=config["walltime"],
@@ -431,47 +336,9 @@ def process_file(
             input_stem=input_stem,
         )
 
-    elif remote == "loboc":
-        log = f"nprocs={nprocs}"
-        job_script_content = PBS_LOBOC_TEMPLATE.format(
-            nprocs=nprocs,
-            walltime=config["default_walltime"],
-            job_name=job_name,
-            orca_path=config["orca_path"],
-            modules=" ".join(config["modules"]),
-            input_filename=input_filename,
-            input_stem=input_stem,
-        )
-
-    elif remote == "newton":
-        version = orca_version or config["default_orca_version"]
-        memory_gb = config["mem_gb"]
-        log = f"nprocs={nprocs} mem={memory_gb}gb orca={version}"
-
-        job_script_content = SLURM_NEWTON_TEMPLATE.format(
-            job_name=job_name,
-            nprocs=nprocs,
-            memory_gb=memory_gb,
-            walltime=config["walltime"],
-            partition=config["partition"],
-            modules=" ".join(config["modules"]),
-            orca_version_label=f"ORCA {version}",
-            orca_exec=config["orca_paths"][version],
-            input_filename=input_filename,
-            input_stem=input_stem,
-        )
-
     elif remote == "njup":
-        resolved_queue = queue or config["default_queue"]
-        content, nprocs = fit_nprocs_to_queue(
-            input_file, content, nprocs, resolved_queue,
-            config["queues"][resolved_queue]["max_procs"], upgrade_nprocs, dry_run,
-        )
-        # Always request the queue's full memory; %maxcore is ignored.
-        memory_gb = config["queues"][resolved_queue]["mem_gb"]
         version = orca_version or config["default_orca_version"]
-        log = f"queue={resolved_queue} nprocs={nprocs} mem={memory_gb}gb orca={version}"
-
+        log += f" orca={version}"
         job_script_content = SLURM_NJUP_TEMPLATE.format(
             job_name=job_name,
             nprocs=nprocs,
@@ -485,15 +352,10 @@ def process_file(
             input_stem=input_stem,
         )
 
-    elif remote == "babel":
-        version = orca_version or config["default_orca_version"]
-        log = f"orca={version}"
-        job_script_content = f"/home/vport/scripts/job -v {version} {input_filename}"
-
     else:  # pragma: no cover - guarded by click.Choice
         raise JobError(f"no job template for remote '{remote}'")
 
-    job_script_path = Path(f"{job_name}{SCRIPT_EXT[remote]}")
+    job_script_path = Path(f"{job_name}{config['script_ext']}")
     if dry_run:
         eprint(f"[{input_filename}] {log} -> {job_script_path} (dry run, not written)")
         eprint(job_script_content)
@@ -501,21 +363,18 @@ def process_file(
         job_script_path.write_text(job_script_content)
         eprint(f"[{input_filename}] {log} -> {job_script_path}")
 
-    recli_remote = config.get("recli_remote")
-    if recli_remote:
-        tags = extract_orca_tags(content) + extra_tags
-        cmd = ["recli", "submit", str(job_script_path), "-r", recli_remote]
-        if strategy:
-            cmd += ["--strategy", strategy]
-        if tags:
-            cmd += ["--tags"] + tags
-        print(" ".join(cmd))
+    tags = extract_orca_tags(content) + extra_tags
+    cmd = ["recli", "submit", str(job_script_path), "-r", config["recli_remote"]]
+    if strategy:
+        cmd += ["--strategy", strategy]
+    if tags:
+        cmd += ["--tags"] + tags
+    print(" ".join(cmd))
 
 
 # --- CLI ---
 
-QUEUE_REMOTES = [r for r, c in CLUSTER_CONFIG.items() if "queues" in c]
-VERSION_REMOTES = ["newton", "njup", "babel"]
+VERSION_REMOTES = [r for r, c in CLUSTER_CONFIG.items() if "orca_paths" in c]
 ORCA_VERSIONS = ["5", "6"]
 STRATEGIES = ["basename", "script", "directory"]
 
@@ -524,29 +383,13 @@ def _remote_summary() -> str:
     """One line per remote, derived from CLUSTER_CONFIG, for --help."""
     lines = []
     for name, cfg in CLUSTER_CONFIG.items():
-        ext = SCRIPT_EXT[name]
-        recli = "recli cmd" if cfg.get("recli_remote") else "no recli cmd"
-        if "queues" in cfg:
-            q = ", ".join(
-                f"{q}={c['max_procs']}p/{c['mem_gb']}gb" for q, c in cfg["queues"].items()
-            )
-            sched = {"pbs": "PBS", "slurm": "Slurm"}[cfg["scheduler"]]
-            extra = f"{sched}; queues {q}"
-            if "orca_paths" in cfg:
-                extra += (
-                    f"; ORCA {'/'.join(cfg['orca_paths'])}"
-                    f" (default {cfg['default_orca_version']})"
-                )
-        elif name == "newton":
-            extra = (
-                f"Slurm; ORCA {'/'.join(cfg['orca_paths'])} "
-                f"(default {cfg['default_orca_version']}); mem {cfg['mem_gb']}gb"
-            )
-        elif name == "babel":
-            extra = f"local pueue via `job`; ORCA 5/6 (default {cfg['default_orca_version']})"
+        q = ", ".join(f"{q}={c['max_procs']}p/{c['mem_gb']}gb" for q, c in cfg["queues"].items())
+        extra = f"{cfg['scheduler']}; queues {q}"
+        if "orca_paths" in cfg:
+            extra += f"; ORCA {'/'.join(cfg['orca_paths'])} (default {cfg['default_orca_version']})"
         else:
-            extra = f"PBS; walltime {cfg.get('default_walltime', cfg.get('walltime'))}"
-        lines.append(f"  {name:<8} {ext:<7} {extra}; {recli}")
+            extra += f"; ORCA {Path(cfg['orca_path']).parent.name}"
+        lines.append(f"  {name:<8} {cfg['script_ext']:<7} {extra}")
     return "\n".join(lines)
 
 
@@ -556,20 +399,19 @@ Remotes:
 
 \b
 Resource rules:
-  - nprocs is read from '! PAL<n>' or '%pal nprocs <n>' (required except babel).
-  - jupiter/colaco: queue defaults to 'big' if nprocs == 16, else 'small'.
+  - nprocs is read from '! PAL<n>' or '%pal nprocs <n>' (required).
+  - jupiter: queue defaults to 'big' if nprocs == 16, else 'small'.
   - njup: queue defaults to 'cpu-big'.
-  - Queued remotes: nprocs above the queue limit is an error; below it is a
-    warning unless --upgrade-nprocs is given, which rewrites the .inp in place.
-  - Memory is the queue maximum (jupiter/colaco/njup) or fixed per remote
-    (newton); %maxcore in the input is ignored.
+  - nprocs above the queue limit is an error; below it is a warning unless
+    --upgrade-nprocs is given, which rewrites the .inp in place.
+  - Memory is always the queue maximum; %maxcore in the input is ignored.
 
 \b
 Output:
   - Writes <job_name><ext> in the current directory (job_name = input stem,
     or <parent>_<cwd> with --use-dir-name).
-  - stdout: one `recli submit ...` command per file (remotes with recli),
-    with tags derived from the ORCA keywords plus any --tags.
+  - stdout: one `recli submit ...` command per file, with tags derived from
+    the ORCA keywords plus any --tags.
   - stderr: progress, warnings, errors.
   - Exit code 0 if every file succeeded, 1 if any failed, 2 on usage errors.
     Failing files are skipped; the rest are still processed.
@@ -579,9 +421,9 @@ Examples:
   qprep -r jupiter opt.inp
   qprep -r jupiter -q freq --upgrade-nprocs freq.inp
   qprep -r njup --upgrade-nprocs *.inp | sh
-  qprep -r newton --orca-version 6 *.inp
+  qprep -r njup --orca-version 5 sp.inp
   qprep -r jupiter --tags ts,guess2 --strategy directory ts.inp | sh
-  qprep -r colaco --dry-run sp.inp
+  qprep -r njup --dry-run sp.inp
 """
 
 
@@ -609,7 +451,7 @@ def _split_tags(ctx, param, values) -> list[str]:
 @click.option(
     "-q", "--queue",
     metavar="QUEUE",
-    help=f"Queue/partition ({'/'.join(QUEUE_REMOTES)} only; see Remotes). Default: per remote.",
+    help="Queue/partition of the chosen remote (see Remotes). Default: per remote.",
 )
 @click.option(
     "--orca-version",
@@ -619,7 +461,7 @@ def _split_tags(ctx, param, values) -> list[str]:
 @click.option(
     "--upgrade-nprocs",
     is_flag=True,
-    help=f"Rewrite PAL/nprocs in the .inp up to the queue maximum ({'/'.join(QUEUE_REMOTES)}).",
+    help="Rewrite PAL/nprocs in the .inp up to the queue maximum.",
 )
 @click.option(
     "--use-dir-name",
@@ -659,10 +501,7 @@ def main(
     Non-interactive: every choice comes from flags or the input file.
     """
     config = CLUSTER_CONFIG[remote]
-    queue_remotes = "/".join(QUEUE_REMOTES)
 
-    if queue and remote not in QUEUE_REMOTES:
-        raise click.UsageError(f"--queue only applies to {queue_remotes}, not '{remote}'.")
     if queue and queue not in config["queues"]:
         raise click.UsageError(
             f"unknown queue '{queue}' for {remote}; choose from: {', '.join(config['queues'])}."
@@ -671,8 +510,6 @@ def main(
         raise click.UsageError(
             f"--orca-version only applies to {'/'.join(VERSION_REMOTES)}, not '{remote}'."
         )
-    if upgrade_nprocs and remote not in QUEUE_REMOTES:
-        raise click.UsageError(f"--upgrade-nprocs only applies to {queue_remotes}, not '{remote}'.")
     if use_dir_name and len(input_files) > 1:
         raise click.UsageError("--use-dir-name with multiple files would give every job the same name.")
 
