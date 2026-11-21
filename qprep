@@ -63,6 +63,24 @@ CLUSTER_CONFIG = {
         "submission_command": "sbatch",
         "modules": ["fermi/openmpi-4.1.6"],
     },
+    "njup": {
+        "scheduler": "slurm",
+        "orca_paths": {
+            "5": "/home/softwares/orcas/orca_5.0.4/orca",
+            "6": "/home/softwares/orcas/orca_6.1.1/orca",
+        },
+        "orca_modules": {"5": "orca/5.0.4", "6": "orca/6.1.1"},
+        "default_orca_version": "6",
+        # Only cpu-big has nodes for now; add cpu-small (8p/15gb) and
+        # cpu-freq (8p/31gb) here when they come online.
+        "queues": {
+            "cpu-big": {"max_procs": 16, "mem_gb": 64},
+        },
+        "default_queue": "cpu-big",
+        "walltime": "30-00:00:00",
+        "submission_command": "sbatch",
+        "recli_remote": "njup",
+    },
     "babel": {
         "default_orca_version": "6",
         "max_procs": 16,
@@ -162,11 +180,84 @@ echo "# ORCA job finished at: $(date)"
 echo "########################################################"
 """
 
+# Raw string: the backslashes are bash line continuations / find escapes.
+SLURM_NJUP_TEMPLATE = r"""#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node={nprocs}
+#SBATCH --time={walltime}
+#SBATCH --mem={memory_gb}G
+#SBATCH --partition={queue}
+#SBATCH --output=slurm.%j.out
+#SBATCH --error=slurm.%j.err
+
+# Environment setup
+module purge
+module load {orca_module}
+
+shopt -s extglob
+
+JOB_ID=${{SLURM_JOB_ID}}
+SUBMIT_DIR=${{SLURM_SUBMIT_DIR}}
+TDIR=/rascunho/${{USER}}-${{JOB_ID}}
+JOB_LOG="${{SUBMIT_DIR}}/{job_name}.job.${{JOB_ID}}"
+
+mkdir -p "${{TDIR}}"
+
+# Stage input and restart/wavefunction files
+cp "${{SUBMIT_DIR}}/{input_filename}" "${{TDIR}}/"
+
+find "${{SUBMIT_DIR}}" -maxdepth 1 -type f \
+    \( -name "*.gbw" -o -name "*.xyz" -o -name "*.hess" -o -name "*.mp2nat" \
+       -o -name "*.res" -o -name "*.res.*" -o -name "*.method*" \) \
+    -exec cp -t "${{TDIR}}" {{}} +
+
+cd "${{TDIR}}"
+
+# Log metadata
+echo "Start of job: $(date)" > "${{JOB_LOG}}"
+echo "ORCA {orca_version}: {orca_exec}" >> "${{JOB_LOG}}"
+echo "Running on: $(hostname) via ${{SLURM_SUBMIT_HOST}}" >> "${{JOB_LOG}}"
+echo "Local scratch: ${{TDIR}}" >> "${{JOB_LOG}}"
+
+# Stage files back on exit, including scancel/timeout (SIGTERM).
+# The signal traps just exit, so cleanup runs exactly once via the EXIT trap.
+SYNC_PID=""
+cleanup() {{
+    [ -n "${{SYNC_PID}}" ] && kill "${{SYNC_PID}}" 2>/dev/null
+    echo "Staging files back to ${{SUBMIT_DIR}}..."
+    cd "${{SUBMIT_DIR}}"
+    if [ -d "${{TDIR}}" ]; then
+        # Copy back everything except internal ORCA .tmp scratch files
+        cp -r "${{TDIR}}"/!(*.tmp*) "${{SUBMIT_DIR}}/" 2>/dev/null || true
+        rm -rf "${{TDIR}}"
+    fi
+    echo "End of job: $(date)" >> "${{JOB_LOG}}"
+}}
+trap cleanup EXIT
+trap 'exit 143' SIGTERM
+trap 'exit 130' SIGINT
+
+# Background output sync (every 15s to reduce NFS load)
+(
+    while true; do
+        sleep 15
+        [ -f "{input_stem}.out" ] && cp "{input_stem}.out" "${{SUBMIT_DIR}}/{input_stem}.out" 2>/dev/null || true
+    done
+) &
+SYNC_PID=$!
+
+export RSH_COMMAND="/usr/bin/ssh -x"
+
+{orca_exec} "{input_filename}" > "{input_stem}.out"
+"""
+
 SCRIPT_EXT = {
     "jupiter": ".pbs",
     "colaco": ".pbs",
     "loboc": ".pbs",
     "newton": ".slurm",
+    "njup": ".slurm",
     "babel": ".pueue",
 }
 
@@ -263,6 +354,35 @@ class JobError(Exception):
     """Per-file failure; the file is skipped and qprep exits non-zero."""
 
 
+def fit_nprocs_to_queue(
+    input_file: Path,
+    content: str,
+    nprocs: int,
+    queue: str,
+    max_procs: int,
+    upgrade_nprocs: bool,
+    dry_run: bool,
+) -> tuple[str, int]:
+    """Check nprocs against the queue limit; optionally rewrite the input up to it."""
+    name = input_file.name
+    if nprocs > max_procs:
+        raise JobError(f"{nprocs} procs requested but queue '{queue}' allows at most {max_procs}")
+
+    if nprocs < max_procs:
+        if upgrade_nprocs:
+            content = rewrite_nprocs_in_content(content, max_procs)
+            if not dry_run:
+                input_file.write_text(content)
+            eprint(f"[{name}] upgraded nprocs {nprocs} -> {max_procs}")
+            nprocs = max_procs
+        else:
+            eprint(
+                f"Warning [{name}]: {nprocs} procs, queue '{queue}' supports {max_procs} "
+                f"(pass --upgrade-nprocs to rewrite the input)"
+            )
+    return content, nprocs
+
+
 def process_file(
     input_file: Path,
     remote: str,
@@ -293,26 +413,10 @@ def process_file(
 
     if remote in ("jupiter", "colaco"):
         resolved_queue = queue or ("big" if nprocs == 16 else "small")
-        max_procs = config["queues"][resolved_queue]["max_procs"]
-
-        if nprocs > max_procs:
-            raise JobError(
-                f"{nprocs} procs requested but queue '{resolved_queue}' allows at most {max_procs}"
-            )
-
-        if nprocs < max_procs:
-            if upgrade_nprocs:
-                content = rewrite_nprocs_in_content(content, max_procs)
-                if not dry_run:
-                    input_file.write_text(content)
-                eprint(f"[{input_filename}] upgraded nprocs {nprocs} -> {max_procs}")
-                nprocs = max_procs
-            else:
-                eprint(
-                    f"Warning [{input_filename}]: {nprocs} procs, queue '{resolved_queue}' "
-                    f"supports {max_procs} (pass --upgrade-nprocs to rewrite the input)"
-                )
-
+        content, nprocs = fit_nprocs_to_queue(
+            input_file, content, nprocs, resolved_queue,
+            config["queues"][resolved_queue]["max_procs"], upgrade_nprocs, dry_run,
+        )
         memory_gb = config["queues"][resolved_queue]["mem_gb"]
         log = f"queue={resolved_queue} nprocs={nprocs} mem={memory_gb}gb"
 
@@ -357,6 +461,30 @@ def process_file(
             input_stem=input_stem,
         )
 
+    elif remote == "njup":
+        resolved_queue = queue or config["default_queue"]
+        content, nprocs = fit_nprocs_to_queue(
+            input_file, content, nprocs, resolved_queue,
+            config["queues"][resolved_queue]["max_procs"], upgrade_nprocs, dry_run,
+        )
+        # Always request the queue's full memory; %maxcore is ignored.
+        memory_gb = config["queues"][resolved_queue]["mem_gb"]
+        version = orca_version or config["default_orca_version"]
+        log = f"queue={resolved_queue} nprocs={nprocs} mem={memory_gb}gb orca={version}"
+
+        job_script_content = SLURM_NJUP_TEMPLATE.format(
+            job_name=job_name,
+            nprocs=nprocs,
+            walltime=config["walltime"],
+            memory_gb=memory_gb,
+            queue=resolved_queue,
+            orca_module=config["orca_modules"][version],
+            orca_version=version,
+            orca_exec=config["orca_paths"][version],
+            input_filename=input_filename,
+            input_stem=input_stem,
+        )
+
     elif remote == "babel":
         version = orca_version or config["default_orca_version"]
         log = f"orca={version}"
@@ -386,7 +514,8 @@ def process_file(
 
 # --- CLI ---
 
-QUEUES = list(CLUSTER_CONFIG["jupiter"]["queues"])
+QUEUE_REMOTES = [r for r, c in CLUSTER_CONFIG.items() if "queues" in c]
+VERSION_REMOTES = ["newton", "njup", "babel"]
 ORCA_VERSIONS = ["5", "6"]
 STRATEGIES = ["basename", "script", "directory"]
 
@@ -401,7 +530,13 @@ def _remote_summary() -> str:
             q = ", ".join(
                 f"{q}={c['max_procs']}p/{c['mem_gb']}gb" for q, c in cfg["queues"].items()
             )
-            extra = f"PBS; queues {q}"
+            sched = {"pbs": "PBS", "slurm": "Slurm"}[cfg["scheduler"]]
+            extra = f"{sched}; queues {q}"
+            if "orca_paths" in cfg:
+                extra += (
+                    f"; ORCA {'/'.join(cfg['orca_paths'])}"
+                    f" (default {cfg['default_orca_version']})"
+                )
         elif name == "newton":
             extra = (
                 f"Slurm; ORCA {'/'.join(cfg['orca_paths'])} "
@@ -423,10 +558,11 @@ Remotes:
 Resource rules:
   - nprocs is read from '! PAL<n>' or '%pal nprocs <n>' (required except babel).
   - jupiter/colaco: queue defaults to 'big' if nprocs == 16, else 'small'.
-    nprocs above the queue limit is an error; below it is a warning unless
-    --upgrade-nprocs is given, which rewrites the .inp in place.
-  - Memory is fixed per queue (jupiter/colaco) or per remote (newton);
-    %maxcore in the input is ignored.
+  - njup: queue defaults to 'cpu-big'.
+  - Queued remotes: nprocs above the queue limit is an error; below it is a
+    warning unless --upgrade-nprocs is given, which rewrites the .inp in place.
+  - Memory is the queue maximum (jupiter/colaco/njup) or fixed per remote
+    (newton); %maxcore in the input is ignored.
 
 \b
 Output:
@@ -442,6 +578,7 @@ Output:
 Examples:
   qprep -r jupiter opt.inp
   qprep -r jupiter -q freq --upgrade-nprocs freq.inp
+  qprep -r njup --upgrade-nprocs *.inp | sh
   qprep -r newton --orca-version 6 *.inp
   qprep -r jupiter --tags ts,guess2 --strategy directory ts.inp | sh
   qprep -r colaco --dry-run sp.inp
@@ -471,18 +608,18 @@ def _split_tags(ctx, param, values) -> list[str]:
 )
 @click.option(
     "-q", "--queue",
-    type=click.Choice(QUEUES),
-    help="PBS queue (jupiter/colaco only). Default: auto from nprocs.",
+    metavar="QUEUE",
+    help=f"Queue/partition ({'/'.join(QUEUE_REMOTES)} only; see Remotes). Default: per remote.",
 )
 @click.option(
     "--orca-version",
     type=click.Choice(ORCA_VERSIONS),
-    help="ORCA major version (newton/babel only). Default: per remote.",
+    help=f"ORCA major version ({'/'.join(VERSION_REMOTES)} only). Default: per remote.",
 )
 @click.option(
     "--upgrade-nprocs",
     is_flag=True,
-    help="Rewrite PAL/nprocs in the .inp up to the queue maximum (jupiter/colaco).",
+    help=f"Rewrite PAL/nprocs in the .inp up to the queue maximum ({'/'.join(QUEUE_REMOTES)}).",
 )
 @click.option(
     "--use-dir-name",
@@ -521,16 +658,24 @@ def main(
 
     Non-interactive: every choice comes from flags or the input file.
     """
-    if queue and remote not in ("jupiter", "colaco"):
-        raise click.UsageError(f"--queue only applies to jupiter/colaco, not '{remote}'.")
-    if orca_version and remote not in ("newton", "babel"):
-        raise click.UsageError(f"--orca-version only applies to newton/babel, not '{remote}'.")
-    if upgrade_nprocs and remote not in ("jupiter", "colaco"):
-        raise click.UsageError(f"--upgrade-nprocs only applies to jupiter/colaco, not '{remote}'.")
+    config = CLUSTER_CONFIG[remote]
+    queue_remotes = "/".join(QUEUE_REMOTES)
+
+    if queue and remote not in QUEUE_REMOTES:
+        raise click.UsageError(f"--queue only applies to {queue_remotes}, not '{remote}'.")
+    if queue and queue not in config["queues"]:
+        raise click.UsageError(
+            f"unknown queue '{queue}' for {remote}; choose from: {', '.join(config['queues'])}."
+        )
+    if orca_version and remote not in VERSION_REMOTES:
+        raise click.UsageError(
+            f"--orca-version only applies to {'/'.join(VERSION_REMOTES)}, not '{remote}'."
+        )
+    if upgrade_nprocs and remote not in QUEUE_REMOTES:
+        raise click.UsageError(f"--upgrade-nprocs only applies to {queue_remotes}, not '{remote}'.")
     if use_dir_name and len(input_files) > 1:
         raise click.UsageError("--use-dir-name with multiple files would give every job the same name.")
 
-    config = CLUSTER_CONFIG[remote]
     failed = 0
     for input_file in input_files:
         try:
