@@ -21,11 +21,13 @@ CLUSTER_CONFIG = {
         "orca_path": "/home/Softwares/orca6.1.0/orca",
         "queues": {
             "small": {"max_procs": 8, "mem_gb": 11},
-            "fast": {"max_procs": 8, "mem_gb": 7},
+            # Short jobs only: 12h is the queue's PBS default. It isn't
+            # enforced as a maximum, so qprep requests it explicitly.
+            "fast": {"max_procs": 8, "mem_gb": 7, "walltime": "12:00:00"},
             "freq": {"max_procs": 8, "mem_gb": 29},
             "big": {"max_procs": 16, "mem_gb": 26},
         },
-        "walltime": "720:00:00",
+        "walltime": "720:00:00",  # per-queue "walltime" overrides this
         "recli_remote": "jupiter",
     },
     "njup": {
@@ -285,6 +287,11 @@ def fit_nprocs_to_queue(
     return content, nprocs
 
 
+def queue_walltime(config: dict, queue: str) -> str:
+    """Walltime a job in this queue requests: the queue's own, else the remote's."""
+    return config["queues"][queue].get("walltime", config["walltime"])
+
+
 def process_file(
     input_file: Path,
     remote: str,
@@ -322,12 +329,13 @@ def process_file(
     )
     # Always request the queue's full memory; %maxcore is ignored.
     memory_gb = config["queues"][resolved_queue]["mem_gb"]
-    log = f"queue={resolved_queue} nprocs={nprocs} mem={memory_gb}gb"
+    walltime = queue_walltime(config, resolved_queue)
+    log = f"queue={resolved_queue} nprocs={nprocs} mem={memory_gb}gb walltime={walltime}"
 
     if remote == "jupiter":
         job_script_content = PBS_JUPITER_TEMPLATE.format(
             nprocs=nprocs,
-            walltime=config["walltime"],
+            walltime=walltime,
             memory_gb=memory_gb,
             queue=resolved_queue,
             job_name=job_name,
@@ -342,7 +350,7 @@ def process_file(
         job_script_content = SLURM_NJUP_TEMPLATE.format(
             job_name=job_name,
             nprocs=nprocs,
-            walltime=config["walltime"],
+            walltime=walltime,
             memory_gb=memory_gb,
             queue=resolved_queue,
             orca_module=config["orca_modules"][version],
@@ -383,7 +391,12 @@ def _remote_summary() -> str:
     """One line per remote, derived from CLUSTER_CONFIG, for --help."""
     lines = []
     for name, cfg in CLUSTER_CONFIG.items():
-        q = ", ".join(f"{q}={c['max_procs']}p/{c['mem_gb']}gb" for q, c in cfg["queues"].items())
+        q = ", ".join(
+            f"{q}={c['max_procs']}p/{c['mem_gb']}gb"
+            + (f"/{c['walltime']}" if "walltime" in c else "")
+            for q, c in cfg["queues"].items()
+        )
+        q += f" (walltime {cfg['walltime']} unless shown)"
         extra = f"{cfg['scheduler']}; queues {q}"
         if "orca_paths" in cfg:
             extra += f"; ORCA {'/'.join(cfg['orca_paths'])} (default {cfg['default_orca_version']})"
@@ -405,6 +418,8 @@ Resource rules:
   - nprocs above the queue limit is an error; below it is a warning unless
     --upgrade-nprocs is given, which rewrites the .inp in place.
   - Memory is always the queue maximum; %maxcore in the input is ignored.
+  - Walltime is the queue's (jupiter fast: 12h) or else the remote's; jobs
+    that run past it are killed.
 
 \b
 Output:
