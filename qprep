@@ -266,6 +266,7 @@ def fit_nprocs_to_queue(
     max_procs: int,
     upgrade_nprocs: bool,
     dry_run: bool,
+    quiet: bool = False,
 ) -> tuple[str, int]:
     """Check nprocs against the queue limit; optionally rewrite the input up to it."""
     name = input_file.name
@@ -279,7 +280,7 @@ def fit_nprocs_to_queue(
                 input_file.write_text(content)
             eprint(f"[{name}] upgraded nprocs {nprocs} -> {max_procs}")
             nprocs = max_procs
-        else:
+        elif not quiet:
             eprint(
                 f"Warning [{name}]: {nprocs} procs, queue '{queue}' supports {max_procs} "
                 f"(pass --upgrade-nprocs to rewrite the input)"
@@ -302,6 +303,7 @@ def process_file(
     upgrade_nprocs: bool,
     extra_tags: list[str],
     strategy: Optional[str],
+    memory: Optional[int],
     dry_run: bool,
 ) -> None:
     if use_dir_name:
@@ -323,12 +325,18 @@ def process_file(
     else:
         resolved_queue = queue or config["default_queue"]
 
+    queue_mem_gb = config["queues"][resolved_queue]["mem_gb"]
+    if memory is not None and memory > queue_mem_gb:
+        raise JobError(f"--memory {memory} exceeds queue '{resolved_queue}' maximum of {queue_mem_gb} GB")
+
+    # --memory means the job was sized on purpose, so skip the below-max warning.
     content, nprocs = fit_nprocs_to_queue(
         input_file, content, nprocs, resolved_queue,
         config["queues"][resolved_queue]["max_procs"], upgrade_nprocs, dry_run,
+        quiet=memory is not None,
     )
-    # Always request the queue's full memory; %maxcore is ignored.
-    memory_gb = config["queues"][resolved_queue]["mem_gb"]
+    # The queue's full memory unless --memory is given; %maxcore is ignored.
+    memory_gb = memory if memory is not None else queue_mem_gb
     walltime = queue_walltime(config, resolved_queue)
     log = f"queue={resolved_queue} nprocs={nprocs} mem={memory_gb}gb walltime={walltime}"
 
@@ -416,8 +424,10 @@ Resource rules:
   - jupiter: queue defaults to 'big' if nprocs == 16, else 'small'.
   - njup: queue defaults to 'cpu-big'.
   - nprocs above the queue limit is an error; below it is a warning unless
-    --upgrade-nprocs is given, which rewrites the .inp in place.
-  - Memory is always the queue maximum; %maxcore in the input is ignored.
+    --upgrade-nprocs (rewrites the .inp in place) or --memory is given.
+  - Memory is the queue maximum unless --memory GB is given (it may not
+    exceed the queue maximum); %maxcore in the input is ignored. Use
+    --memory to share a node, e.g. two 8-proc jobs at 30 GB on njup cpu-big.
   - Walltime is the queue's (jupiter fast: 12h) or else the remote's; jobs
     that run past it are killed.
 
@@ -437,6 +447,7 @@ Examples:
   qprep -r jupiter -q freq --upgrade-nprocs freq.inp
   qprep -r njup --upgrade-nprocs *.inp | sh
   qprep -r njup --orca-version 5 sp.inp
+  qprep -r njup --memory 30 *.inp | sh
   qprep -r jupiter --tags ts,guess2 --strategy directory ts.inp | sh
   qprep -r njup --dry-run sp.inp
 """
@@ -496,6 +507,12 @@ def _split_tags(ctx, param, values) -> list[str]:
     help="recli upload strategy. Default: recli's configured default.",
 )
 @click.option(
+    "--memory",
+    type=click.IntRange(min=1),
+    metavar="GB",
+    help="Memory to request, in GB (at most the queue maximum). Default: queue maximum.",
+)
+@click.option(
     "-n", "--dry-run",
     is_flag=True,
     help="Print job scripts to stderr instead of writing anything.",
@@ -509,6 +526,7 @@ def main(
     use_dir_name: bool,
     extra_tags: list[str],
     strategy: Optional[str],
+    memory: Optional[int],
     dry_run: bool,
 ):
     """Generate ORCA job scripts for HPC clusters and print recli submit commands.
@@ -533,7 +551,7 @@ def main(
         try:
             process_file(
                 input_file, remote, config, queue, orca_version,
-                use_dir_name, upgrade_nprocs, extra_tags, strategy, dry_run,
+                use_dir_name, upgrade_nprocs, extra_tags, strategy, memory, dry_run,
             )
         except JobError as e:
             eprint(f"Error [{input_file.name}]: {e}")
