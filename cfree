@@ -3,17 +3,25 @@
 # /// script
 # requires-python = ">=3.13"
 # dependencies = [
+#     "click>=8.1",  # needed to import qprep's CLUSTER_CONFIG
 #     "rich",
 # ]
 # ///
 
+"""Where can a job start? Per-queue availability and contention on the clusters."""
 
 import argparse
 import concurrent.futures
+import importlib.machinery
+import importlib.util
 import json
-import subprocess
+import re
+import shlex
 import sys
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import dataclass, field
+import subprocess
+from pathlib import Path
 
 from rich import box
 from rich.columns import Columns
@@ -21,397 +29,523 @@ from rich.console import Console
 from rich.table import Table
 
 MY_USER = "vport"
-FRIEND_USER = "colaco"
-BABEL_HOST = "babel"
+SSH_TIMEOUT = 60
 
-MAX_JOBS = {
-    "freq": 5,
-    "big": 4,
-    "small": 5,
-    "fast": 1,
-}
+# Used only when `qmgr` on jupiter can't be read. The live values come from
+# the queues' max_run = [u:PBS_GENERIC=N] settings.
+FALLBACK_PBS_LIMITS = {"big": 4, "small": 5, "freq": 5}
+
+
+def load_cluster_config() -> dict:
+    """Queue specs (max_procs, mem_gb) come from qprep so the two can't drift."""
+    path = Path(__file__).resolve().parent / "qprep"
+    loader = importlib.machinery.SourceFileLoader("qprep", str(path))
+    spec = importlib.util.spec_from_loader("qprep", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module.CLUSTER_CONFIG
+
+
+# --- Data model -------------------------------------------------------------
 
 
 @dataclass
-class Node:
+class NodeInfo:
     name: str
-    state: str
-    cpus: int
-    mem: str
     queue: str
-
-    def __repr__(self):
-        return f"Node(name='{self.name}', state='{self.state}', cpus={self.cpus}, mem='{self.mem}', queue='{self.queue}')"
-
-    def __str__(self):
-        return f"{self.name:10} | {self.state:10} | {self.cpus:4} | {self.mem:8} | {self.queue}"
+    cpus: int
+    mem_gb: float | None
+    free: bool  # fully free: no jobs, nothing assigned
+    down: bool
 
 
-class UserNodes:
-    def __init__(self, queue):
-        self.queue = queue
-        self.used_nodes = 0
-        self.free_nodes = 0
-        self.queued_jobs = 0
-
-    def add_used_node(self):
-        self.used_nodes += 1
-
-    def add_queued_jobs(self):
-        self.queued_jobs += 1
-
-    def calc_free_nodes(self, max_jobs):
-        self.free_nodes = max_jobs - self.used_nodes
+@dataclass
+class JobInfo:
+    user: str
+    queue: str
+    state: str  # "R" or "Q"
+    elapsed_h: float  # 0 for queued jobs
 
 
-def parse_pbsnodes(json_data):
+@dataclass
+class RemoteData:
+    scheduler: str
+    nodes: list[NodeInfo]
+    jobs: list[JobInfo]
+    limits: dict[str, int | None]  # per-user running-job limit per queue
+    warnings: list[str] = field(default_factory=list)
+
+
+# --- Helpers ----------------------------------------------------------------
+
+
+def ssh(host: str, *cmd: str) -> str:
+    return subprocess.check_output(
+        ["ssh", host, shlex.join(cmd)], text=True, stderr=subprocess.PIPE, timeout=SSH_TIMEOUT
+    )
+
+
+def mem_to_gb(value) -> float | None:
+    """'27gb', '16374324kb', '12GB' -> GB (base 1024)."""
+    if value is None:
+        return None
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([kmgt]?)b?\s*", str(value), re.I)
+    if not m:
+        return None
+    n, unit = float(m.group(1)), m.group(2).lower()
+    factor = {"": 1 / 1024**3, "k": 1 / 1024**2, "m": 1 / 1024, "g": 1, "t": 1024}[unit]
+    return round(n * factor, 1)
+
+
+def hms_to_hours(value: str) -> float:
+    """'161:37:49' (PBS) or '1-02:03:04', '58:33', '1:13:35' (Slurm) -> hours."""
+    if not value or value in ("INVALID", "UNLIMITED"):
+        return 0.0
+    days = 0
+    if "-" in value:
+        d, value = value.split("-", 1)
+        days = int(d)
+    parts = [int(p) for p in value.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    h, m, s = parts[-3:]
+    return round(days * 24 + h + m / 60 + s / 3600, 1)
+
+
+def parse_json_output(text: str) -> dict:
+    # PBS sometimes emits control characters inside strings (Variable_List).
+    return json.loads(text[text.index("{") :], strict=False)
+
+
+# --- jupiter (PBS) ----------------------------------------------------------
+
+
+def pbs_node_is_free(node_data: dict) -> bool:
+    """state == 'free' alone isn't enough: partly used nodes also report it."""
+    if node_data.get("state") != "free" or node_data.get("jobs"):
+        return False
+    assigned = node_data.get("resources_assigned", {})
+    if assigned.get("ncpus", 0) > 0:
+        return False
+    mem = assigned.get("mem", "0kb")
+    return not mem or mem == "0kb"
+
+
+def pbs_node_is_down(state: str) -> bool:
+    return any(s in state for s in ("down", "offline", "unknown", "unresolvable"))
+
+
+def parse_pbs_nodes(data: dict, queues: set[str]) -> list[NodeInfo]:
     nodes = []
-    for node_name, node_data in json_data.get("nodes", {}).items():
-        state = node_data.get("state", "unknown")
-        queue = node_data.get("queue", "unknown")
-
-        pcpus = node_data.get("pcpus", 0)
-        ncpus = node_data.get("resources_available", {}).get("ncpus", pcpus)
-        cpus = int(ncpus if ncpus else pcpus)
-
-        mem = node_data.get("resources_available", {}).get("mem", "0gb").upper()
-
-        node = Node(node_name, state, cpus, mem, queue)
-        nodes.append(node)
-
+    for name, nd in data.get("nodes", {}).items():
+        queue = nd.get("queue", "unknown")
+        if queue not in queues:
+            continue
+        avail = nd.get("resources_available", {})
+        cpus = int(avail.get("ncpus") or nd.get("pcpus") or 0)
+        state = nd.get("state", "unknown")
+        nodes.append(
+            NodeInfo(
+                name=name,
+                queue=queue,
+                cpus=cpus,
+                mem_gb=mem_to_gb(avail.get("mem")),
+                free=pbs_node_is_free(nd),
+                down=pbs_node_is_down(state),
+            )
+        )
     return nodes
 
 
-def is_node_actually_free(node_name, node_data):
-    """Check if a node is truly free:
-
-    1. State must be 'free' 2. No jobs should be assigned to it (jobs list should be
-    empty or non-existent) 3. resources_assigned should be empty or have zero values
-    """
-    if node_data.get("state") != "free":
-        return False
-
-    jobs = node_data.get("jobs", [])
-    if jobs:
-        return False
-
-    resources_assigned = node_data.get("resources_assigned", {})
-
-    if resources_assigned:
-        assigned_ncpus = resources_assigned.get("ncpus", 0)
-        if assigned_ncpus > 0:
-            return False
-
-        assigned_mem = resources_assigned.get("mem", "0kb")
-        if assigned_mem and assigned_mem != "0kb":
-            return False
-
-    return True
+def parse_pbs_jobs(data: dict, queues: set[str]) -> list[JobInfo]:
+    jobs = []
+    for jd in data.get("Jobs", {}).values():
+        queue = jd.get("queue")
+        if queue not in queues:
+            continue
+        state = jd.get("job_state")
+        if state in ("R", "E"):
+            state = "R"
+        elif state != "Q":
+            continue  # held/waiting/etc. aren't competing for nodes
+        jobs.append(
+            JobInfo(
+                user=jd.get("Job_Owner", "?").split("@")[0],
+                queue=queue,
+                state=state,
+                elapsed_h=hms_to_hours(jd.get("resources_used", {}).get("walltime", ""))
+                if state == "R"
+                else 0.0,
+            )
+        )
+    return jobs
 
 
-def execute_pbsnodes():
-    output = subprocess.check_output(
-        ["ssh", "jupiter", "pbsnodes", "-a", "-F", "json"],
-        text=True,
-        stderr=subprocess.STDOUT,
+def parse_qmgr_limits(text: str, queues: set[str]) -> dict[str, int | None]:
+    limits: dict[str, int | None] = {q: None for q in queues}
+    current = None
+    for line in text.splitlines():
+        if m := re.match(r"^Queue\s+(\S+)", line):
+            current = m.group(1)
+        elif current in limits and (m := re.search(r"max_run\s*=.*u:PBS_GENERIC=(\d+)", line)):
+            limits[current] = int(m.group(1))
+    return limits
+
+
+def fetch_jupiter(host: str, queues: set[str]) -> RemoteData:
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        f_nodes = ex.submit(ssh, host, "pbsnodes", "-a", "-F", "json")
+        f_jobs = ex.submit(ssh, host, "qstat", "-f", "-F", "json")
+        f_qmgr = ex.submit(ssh, host, "qmgr", "-c", "list queue @default")
+        nodes = parse_pbs_nodes(parse_json_output(f_nodes.result()), queues)
+        jobs = parse_pbs_jobs(parse_json_output(f_jobs.result()), queues)
+        warnings = []
+        try:
+            limits = parse_qmgr_limits(f_qmgr.result(), queues)
+        except Exception as e:
+            limits = {q: FALLBACK_PBS_LIMITS.get(q) for q in queues}
+            warnings.append(f"{host}: qmgr failed ({describe_error(e)}); using fallback limits")
+    return RemoteData("pbs", nodes, jobs, limits, warnings)
+
+
+# --- njup (Slurm) -----------------------------------------------------------
+
+SLURM_DOWN = ("down", "drain", "fail", "maint", "unknown", "not_responding", "reboot", "future")
+
+
+def fetch_njup(host: str, queues: set[str]) -> RemoteData:
+    parts = ",".join(sorted(queues))
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        f_nodes = ex.submit(ssh, host, "sinfo", "-h", "-N", "-p", parts, "-o", "%N|%P|%T|%c|%m")
+        f_jobs = ex.submit(ssh, host, "squeue", "-h", "-p", parts, "-o", "%u|%P|%T|%M")
+        node_out, job_out = f_nodes.result(), f_jobs.result()
+
+    nodes = []
+    for line in node_out.splitlines():
+        name, part, state, cpus, mem_mb = line.strip().split("|")
+        part = part.rstrip("*")  # default partition is marked with '*'
+        state = state.lower()
+        nodes.append(
+            NodeInfo(
+                name=name,
+                queue=part,
+                cpus=int(cpus),
+                mem_gb=round(int(mem_mb) / 1024, 1),
+                free=state == "idle",
+                down=any(s in state for s in SLURM_DOWN) or state.endswith("*"),
+            )
+        )
+
+    jobs = []
+    for line in job_out.splitlines():
+        user, part, state, elapsed = line.strip().split("|")
+        if state in ("RUNNING", "COMPLETING"):
+            jobs.append(JobInfo(user, part, "R", hms_to_hours(elapsed)))
+        elif state == "PENDING":
+            jobs.append(JobInfo(user, part, "Q", 0.0))
+
+    # No per-user limits on njup.
+    return RemoteData("slurm", nodes, jobs, {q: None for q in queues})
+
+
+FETCHERS = {"PBS": fetch_jupiter, "Slurm": fetch_njup}
+
+
+# --- Analysis ---------------------------------------------------------------
+
+
+def analyse_queue(
+    queue: str, spec: dict, walltime: str, limit: int | None, nodes, jobs
+) -> dict:
+    qnodes = [n for n in nodes if n.queue == queue]
+    total = len(qnodes)
+    down = sum(n.down for n in qnodes)
+    free = sum(n.free and not n.down for n in qnodes)
+
+    per_user: dict[str, dict] = {}
+    for j in jobs:
+        if j.queue != queue:
+            continue
+        u = per_user.setdefault(j.user, {"running": 0, "queued": 0, "longest_running_h": 0.0})
+        if j.state == "R":
+            u["running"] += 1
+            u["longest_running_h"] = max(u["longest_running_h"], j.elapsed_h)
+        else:
+            u["queued"] += 1
+
+    users = []
+    others_eligible = 0
+    held = 0
+    running_total = 0
+    for name, u in per_user.items():
+        at_limit = limit is not None and u["running"] >= limit
+        running_total += u["running"]
+        # A capped user's freed nodes go to their own backlog, not to others.
+        if at_limit and u["queued"] > 0:
+            held += u["running"]
+        if name != MY_USER:
+            slots = u["queued"] if limit is None else max(0, limit - u["running"])
+            others_eligible += min(u["queued"], slots)
+        users.append({"user": name, **u, "at_limit": at_limit})
+    users.sort(key=lambda u: (-(u["running"] + u["queued"]), u["user"]))
+
+    mine = per_user.get(MY_USER, {"running": 0, "queued": 0})
+    my_running, my_queued = mine["running"], mine["queued"]
+    slots_left = None if limit is None else max(0, limit - my_running)
+
+    room_nodes = free - others_eligible - my_queued
+    room_slots = float("inf") if slots_left is None else slots_left - my_queued
+    startable = max(0, min(room_nodes, room_slots))
+    if startable > 0:
+        blocked_by, ahead = "none", 0
+    elif room_slots <= 0:
+        blocked_by, ahead = "user_limit", my_queued
+    else:
+        blocked_by, ahead = "no_free_nodes", others_eligible + my_queued
+
+    return {
+        "max_procs": spec["max_procs"],
+        "mem_gb": spec["mem_gb"],
+        "walltime_h": hms_to_hours(spec.get("walltime", walltime)),
+        "user_limit": limit,
+        "nodes": {"total": total, "down": down, "up": total - down, "free": free},
+        "users": users,
+        "contention": {
+            "others_eligible_waiting": others_eligible,
+            "nodes_held_by_backlog": held,
+            "nodes_turning_over": running_total - held,
+        },
+        "mine": {"running": my_running, "queued": my_queued, "slots_left": slots_left},
+        "startable_now": int(startable),
+        "blocked_by": blocked_by,
+        "ahead_of_you": ahead,
+    }
+
+
+def analyse_remote(cfg: dict, data: RemoteData) -> dict:
+    queues = {
+        q: analyse_queue(q, spec, cfg["walltime"], data.limits.get(q), data.nodes, data.jobs)
+        for q, spec in cfg["queues"].items()
+    }
+    free_nodes = sorted(
+        (n for n in data.nodes if n.free and not n.down), key=lambda n: (n.queue, n.name)
     )
-    return json.loads(output)
+    return {
+        "scheduler": data.scheduler,
+        "queues": queues,
+        "free_nodes": [
+            {"name": n.name, "queue": n.queue, "cpus": n.cpus, "mem_gb": n.mem_gb}
+            for n in free_nodes
+        ],
+    }
 
 
-def execute_qstat(username: str) -> str:
-    return subprocess.check_output(
-        ["ssh", "jupiter", "qstat", "-u", username],
-        text=True,
-        stderr=subprocess.DEVNULL,
-    )
+def describe_error(e: Exception) -> str:
+    if isinstance(e, subprocess.CalledProcessError):
+        detail = (e.stderr or "").strip().splitlines()
+        return f"exit {e.returncode}" + (f": {detail[-1]}" if detail else "")
+    if isinstance(e, subprocess.TimeoutExpired):
+        return f"timed out after {SSH_TIMEOUT}s"
+    return f"{type(e).__name__}: {e}"
 
 
-def execute_pueue() -> dict:
-    output = subprocess.check_output(
-        ["ssh", BABEL_HOST, "pueue", "status", "--json"],
-        text=True,
-        stderr=subprocess.STDOUT,
-    )
-    data = json.loads(output)
-    tasks = data.get("tasks", {})
+def collect(config: dict, remotes: list[str]) -> dict:
+    result = {"fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "remotes": {}, "errors": []}
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        futures = {
+            name: ex.submit(
+                FETCHERS[config[name]["scheduler"]],
+                config[name].get("recli_remote", name),
+                set(config[name]["queues"]),
+            )
+            for name in remotes
+        }
+        for name, fut in futures.items():
+            try:
+                data = fut.result()
+            except Exception as e:
+                result["remotes"][name] = None
+                result["errors"].append(f"{name}: {describe_error(e)}")
+                continue
+            result["remotes"][name] = analyse_remote(config[name], data)
+            result["errors"].extend(data.warnings)
+    return result
 
-    def _status(s):
-        return s if isinstance(s, str) else next(iter(s), "Unknown")
 
-    running = sum(1 for t in tasks.values() if _status(t.get("status", "")) == "Running")
-    queued = sum(1 for t in tasks.values() if _status(t.get("status", "")) == "Queued")
-    return {"running": running, "queued": queued}
+# --- Human output -----------------------------------------------------------
 
 
-def parse_arguments():
+def verdict(q: dict) -> str:
+    if q["blocked_by"] == "none":
+        return f"[green]start now ({q['startable_now']})[/green]"
+    if q["blocked_by"] == "user_limit":
+        return f"[yellow]your limit, {q['ahead_of_you']} ahead[/yellow]"
+    return f"[red]no nodes, {q['ahead_of_you']} ahead[/red]"
+
+
+def remote_table(name: str, remote: dict) -> Table:
+    t = Table(box=box.ROUNDED, title=f"{name} ({remote['scheduler']})")
+    t.add_column("Queue", style="cyan")
+    t.add_column("Spec", justify="right")
+    t.add_column("Up/Tot", justify="center")
+    t.add_column("Free", justify="center")
+    t.add_column("Others\nwaiting", justify="center")
+    t.add_column("Held/\nturnover", justify="center")
+    t.add_column("Mine\nR/Q/lim", justify="center")
+    t.add_column("Verdict")
+    for qname, q in remote["queues"].items():
+        n, c, m = q["nodes"], q["contention"], q["mine"]
+        up = f"{n['up']}/{n['total']}" + (f" [red]({n['down']}↓)[/red]" if n["down"] else "")
+        free = f"[green]{n['free']}[/green]" if n["free"] else "[dim]0[/dim]"
+        lim = "∞" if q["user_limit"] is None else str(q["user_limit"])
+        t.add_row(
+            qname,
+            f"{q['max_procs']}p/{q['mem_gb']}g/{q['walltime_h']:g}h",
+            up,
+            free,
+            str(c["others_eligible_waiting"]),
+            f"{c['nodes_held_by_backlog']}/{c['nodes_turning_over']}",
+            f"{m['running']}/{m['queued']}/{lim}",
+            verdict(q),
+        )
+    return t
+
+
+def users_table(name: str, remote: dict) -> Table:
+    t = Table(box=box.SIMPLE, title=f"{name}: jobs by user")
+    t.add_column("Queue", style="cyan")
+    t.add_column("User")
+    t.add_column("Run", justify="right")
+    t.add_column("Queued", justify="right")
+    t.add_column("Longest (h)", justify="right")
+    for qname, q in remote["queues"].items():
+        for u in q["users"]:
+            user = f"[bold]{u['user']}[/bold]" if u["user"] == MY_USER else u["user"]
+            run = f"[red]{u['running']}[/red]" if u["at_limit"] else str(u["running"])
+            t.add_row(qname, user, run, str(u["queued"]), f"{u['longest_running_h']:.0f}")
+    return t
+
+
+def free_nodes_table(result: dict) -> Table:
+    t = Table(box=box.ROUNDED, title="Free nodes")
+    t.add_column("Remote", style="cyan")
+    t.add_column("Node")
+    t.add_column("Queue", style="green")
+    t.add_column("CPUs", justify="right")
+    t.add_column("Mem (GB)", justify="right")
+    for rname, remote in result["remotes"].items():
+        for n in (remote or {}).get("free_nodes", []):
+            mem = "?" if n["mem_gb"] is None else f"{n['mem_gb']:g}"
+            t.add_row(rname, n["name"], n["queue"], str(n["cpus"]), mem)
+    return t
+
+
+# --- CLI --------------------------------------------------------------------
+
+
+def parse_arguments(config: dict):
+    remotes = ", ".join(config)
     parser = argparse.ArgumentParser(
-        description="Check free nodes and per-user job slots on jupiter.",
+        description="Show where a job can start: per-queue free nodes, your slots, "
+        "and how many jobs from other users compete for them.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
-  %(prog)s                    # Summary tables
-  %(prog)s -a                 # Table of every free node
-  %(prog)s --json             # Everything as one JSON object on stdout
+  %(prog)s                  # one table per remote
+  %(prog)s -u               # plus jobs by user in each queue
+  %(prog)s -r jupiter       # one remote only
+  %(prog)s -a               # list of fully free nodes
+  %(prog)s --json           # everything as one compact JSON object on stdout
 
-JSON schema (--json; --all is ignored, free_nodes is always included):
+How to read it (also the meaning of the JSON fields):
+  user_limit       per-user running-job limit (jupiter: live from qmgr; njup: none).
+  nodes.free       fully free nodes (no jobs assigned). Down nodes aren't up.
+  others_eligible_waiting
+                   queued jobs from other users who are under the limit: they
+                   take the next node that frees up (PBS starts older jobs first).
+  nodes_held_by_backlog
+                   running jobs (~nodes) of users at the limit who still have
+                   jobs queued. When one ends, that user's next job takes the
+                   node, so it doesn't become free for anyone else.
+  nodes_turning_over
+                   the other running jobs: their nodes go to the queue when done.
+  startable_now    new jobs of yours that would start right away.
+  blocked_by       none | user_limit (starts when your own jobs finish)
+                   | no_free_nodes (waits on others' jobs to finish).
+  ahead_of_you     jobs that start before a new one of yours.
+  walltime_h       the walltime qprep requests in this queue; a job still running
+                   then is killed (jupiter fast: 12h, so short jobs only).
+  Almost every jupiter job requests 720h walltime, so there's no ETA;
+  longest_running_h per user is the best hint of turnover.
+
+JSON schema (--json):
   {{
-    "cluster": {{
-      "queues": {{"<queue>": {{"free": int, "busy": int, "total": int}}}},
-      "total_free": int, "total_nodes": int
-    }},
-    "free_nodes": [{{"name": str, "queue": str, "cpus": int, "mem": str}}],
-    "users": {{
-      "<user>": {{"<queue>": {{"used": int, "free": int, "queued": int, "max": int}}}} | null
+    "fetched_at": str,
+    "remotes": {{
+      "<remote>": {{
+        "scheduler": "pbs" | "slurm",
+        "queues": {{
+          "<queue>": {{
+            "max_procs": int, "mem_gb": int, "walltime_h": float,
+            "user_limit": int | null,
+            "nodes": {{"total": int, "down": int, "up": int, "free": int}},
+            "users": [{{"user": str, "running": int, "queued": int,
+                        "at_limit": bool, "longest_running_h": float}}],
+            "contention": {{"others_eligible_waiting": int,
+                           "nodes_held_by_backlog": int, "nodes_turning_over": int}},
+            "mine": {{"running": int, "queued": int, "slots_left": int | null}},
+            "startable_now": int,
+            "blocked_by": "none" | "user_limit" | "no_free_nodes",
+            "ahead_of_you": int
+          }}
+        }},
+        "free_nodes": [{{"name": str, "queue": str, "cpus": int, "mem_gb": float | null}}]
+      }} | null
     }},
     "errors": [str]
   }}
-  "free" under users = job slots left for that user (max - used; per-user limits
-  {MAX_JOBS}). A user is null if their qstat call failed; the reason is in "errors".
+  A remote is null if it couldn't be queried; the reason is in "errors".
+  Queues and their max_procs/mem_gb/walltime_h come from qprep's CLUSTER_CONFIG
+  (remotes: {remotes}). mem_gb is what qprep requests per job.
 
-Exit codes: 0 ok, 1 if node data could not be fetched (JSON mode prints
-{{"error": "..."}} to stdout), 2 on bad arguments.
+Exit codes: 0 if at least one remote answered, 1 if none did, 2 on bad arguments.
         """,
     )
-
     parser.add_argument(
-        "-a", "--all", action="store_true", help="show all free nodes sorted by queue"
+        "-r", "--remote", action="append", choices=list(config),
+        help="only query this remote (repeatable; default: all)",
     )
-    parser.add_argument(
-        "--json", action="store_true", help="print one JSON object to stdout instead of tables"
-    )
-
+    parser.add_argument("-u", "--users", action="store_true", help="also show jobs by user")
+    parser.add_argument("-a", "--all", action="store_true", help="list fully free nodes")
+    parser.add_argument("--json", action="store_true", help="print one JSON object to stdout")
     return parser.parse_args()
 
 
-def get_free_nodes(nodes, json_data):
-    """Truly free nodes, sorted by queue and name."""
-    free_nodes = [
-        node
-        for node in nodes
-        if (node_data := json_data.get("nodes", {}).get(node.name))
-        and is_node_actually_free(node.name, node_data)
-    ]
-    free_nodes.sort(key=lambda x: (x.queue, x.name))
-    return free_nodes
-
-
-def show_free_nodes_table(free_nodes, console):
-    """Show table of all truly free nodes sorted by queue and name."""
-
-    if not free_nodes:
-        console.print("[yellow]No free nodes available.[/yellow]")
-        return
-
-    table = Table(box=box.ROUNDED, title="Free Nodes")
-    table.add_column("Node Name", style="cyan")
-    table.add_column("Queue", style="green")
-    table.add_column("CPUs", justify="right", style="blue")
-    table.add_column("Memory", justify="right", style="magenta")
-
-    for node in free_nodes:
-        table.add_row(node.name, node.queue, str(node.cpus), node.mem)
-
-    console.print(table)
-    console.print(f"\nTotal free nodes: [bold green]{len(free_nodes)}[/bold green]")
-
-
-def build_queue_summary_table(nodes, json_data):
-    """Build summary table with free nodes per queue.
-
-    Returns (table, summary_str, queue_stats).
-    queue_stats: {"small": {"free": 1, "busy": 4, "total": 5}, ...}
-    """
-
-    queue_stats = {}
-    for node in nodes:
-        queue = node.queue
-        if queue not in queue_stats:
-            queue_stats[queue] = {"total": 0, "free": 0, "busy": 0}
-
-        queue_stats[queue]["total"] += 1
-
-        node_data = json_data.get("nodes", {}).get(node.name)
-        if node_data and is_node_actually_free(node.name, node_data):
-            queue_stats[queue]["free"] += 1
-        else:
-            queue_stats[queue]["busy"] += 1
-
-    table = Table(box=box.ROUNDED, title="Cluster")
-    table.add_column("Queue", style="cyan")
-    table.add_column("Free", justify="center")
-    table.add_column("Busy", justify="center")
-    table.add_column("Total", justify="center")
-    table.add_column("Free %", justify="right")
-
-    for queue, stats in sorted(queue_stats.items()):
-        free = stats["free"]
-        busy = stats["busy"]
-        total = stats["total"]
-        percentage = (free / total * 100) if total > 0 else 0
-
-        free_str = f"[green]{free}[/green]" if free > 0 else f"[red]{free}[/red]"
-        busy_str = f"[yellow]{busy}[/yellow]" if busy > 0 else str(busy)
-
-        table.add_row(queue, free_str, busy_str, str(total), f"{percentage:.1f}%")
-
-    total_nodes = len(nodes)
-    total_free = sum(
-        1
-        for node in nodes
-        if json_data.get("nodes", {}).get(node.name)
-        and is_node_actually_free(node.name, json_data["nodes"][node.name])
-    )
-    overall_percentage = (total_free / total_nodes * 100) if total_nodes > 0 else 0
-    summary = f" [green]{total_free}[/green] free out of {total_nodes} ({overall_percentage:.1f}%)"
-
-    return table, summary, queue_stats
-
-
-def build_user_table(qstat_data: str, username: str):
-    """Build user job summary table.
-
-    Returns (table, user_stats).
-    user_stats: {"small": {"used": 2, "free": 3, "queued": 0}, ...}
-    """
-    lines = qstat_data.splitlines()
-
-    queues = [
-        UserNodes("big"),
-        UserNodes("small"),
-        UserNodes("freq"),
-        UserNodes("fast"),
-    ]
-
-    for line in lines[5:]:
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        linequeue = parts[2]
-        status = parts[-2]
-        for queue in queues:
-            if queue.queue == linequeue:
-                if status == "R":
-                    queue.add_used_node()
-                elif status == "Q":
-                    queue.add_queued_jobs()
-
-    for queue in queues:
-        queue.calc_free_nodes(MAX_JOBS[queue.queue])
-
-    table = Table(box=box.ROUNDED, title=username)
-    table.add_column("Queue", style="cyan", justify="left")
-    table.add_column("Used", justify="center")
-    table.add_column("Free", justify="center")
-    table.add_column("Queued", justify="center")
-
-    user_stats = {}
-    for data in queues:
-        free_str = (
-            f"[green]{data.free_nodes}[/green]"
-            if data.free_nodes > 0
-            else f"[red]{data.free_nodes}[/red]"
-        )
-        if data.used_nodes == 0:
-            used_str = f"[green]{data.used_nodes}[/green]"
-        elif data.used_nodes != MAX_JOBS[data.queue]:
-            used_str = f"[yellow]{data.used_nodes}[/yellow]"
-        else:
-            used_str = f"[red]{data.used_nodes}[/red]"
-
-        table.add_row(data.queue, used_str, free_str, str(data.queued_jobs))
-
-        user_stats[data.queue] = {
-            "used": data.used_nodes,
-            "free": data.free_nodes,
-            "queued": data.queued_jobs,
-            "max": MAX_JOBS[data.queue],
-        }
-
-    return table, user_stats
-
-
-def build_babel_table(babel_data: dict) -> Table:
-    running = babel_data["running"]
-    queued = babel_data["queued"]
-
-    table = Table(box=box.ROUNDED, title=BABEL_HOST)
-    table.add_column("Running", justify="center")
-    table.add_column("Queued", justify="center")
-
-    run_str = f"[yellow]{running}[/yellow]" if running > 0 else f"[green]{running}[/green]"
-    q_str = f"[yellow]{queued}[/yellow]" if queued > 0 else f"[green]{queued}[/green]"
-    table.add_row(run_str, q_str)
-
-    return table
-
-
 def main():
-    console = Console()
-    args = parse_arguments()
-    errors = []
+    config = load_cluster_config()
+    args = parse_arguments(config)
+    remotes = args.remote or list(config)
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        f_nodes = executor.submit(execute_pbsnodes)
-        f_qstat = {user: executor.submit(execute_qstat, user) for user in (MY_USER, FRIEND_USER)}
-        # f_babel = executor.submit(execute_pueue)
-
-        try:
-            json_data = f_nodes.result()
-        except Exception as e:
-            msg = f"could not fetch node data: {e}"
-            if args.json:
-                print(json.dumps({"error": msg}))
-            else:
-                Console(stderr=True).print(f"[bold red]Error: {msg}[/bold red]")
-            sys.exit(1)
-
-        qstat = {}
-        for user, fut in f_qstat.items():
-            try:
-                qstat[user] = fut.result()
-            except Exception as e:
-                qstat[user] = None
-                errors.append(f"qstat -u {user} failed: {e}")
-
-    nodes = parse_pbsnodes(json_data)
-    free_nodes = get_free_nodes(nodes, json_data)
-
-    if args.all and not args.json:
-        show_free_nodes_table(free_nodes, console)
-        return
-
-    cluster_table, summary, queue_stats = build_queue_summary_table(nodes, json_data)
-    user_tables, user_stats = {}, {}
-    for user, data in qstat.items():
-        if data is None:
-            user_stats[user] = None
-        else:
-            user_tables[user], user_stats[user] = build_user_table(data, user)
+    result = collect(config, remotes)
+    ok = any(r is not None for r in result["remotes"].values())
 
     if args.json:
-        output = {
-            "cluster": {
-                "queues": queue_stats,
-                "total_free": len(free_nodes),
-                "total_nodes": len(nodes),
-            },
-            "free_nodes": [
-                {k: v for k, v in asdict(n).items() if k != "state"} for n in free_nodes
-            ],
-            "users": user_stats,
-            "errors": errors,
-        }
-        print(json.dumps(output, indent=2))
-        return
+        print(json.dumps(result, separators=(",", ":")))
+        sys.exit(0 if ok else 1)
 
-    tables = [cluster_table, *user_tables.values()]
-    # if babel_data is not None:
-    #     tables.append(build_babel_table(babel_data))
-
-    console.print(Columns(tables, padding=(0, 2)))
-    console.print(summary)
-    for err in errors:
-        Console(stderr=True).print(f"[yellow]Warning: {err}[/yellow]")
+    console, err = Console(), Console(stderr=True)
+    if args.all:
+        console.print(free_nodes_table(result))
+    else:
+        tables = [remote_table(n, r) for n, r in result["remotes"].items() if r]
+        console.print(Columns(tables, padding=(0, 2)))
+        if args.users:
+            console.print(Columns(
+                [users_table(n, r) for n, r in result["remotes"].items() if r], padding=(0, 2)
+            ))
+    for e in result["errors"]:
+        err.print(f"[yellow]Warning: {e}[/yellow]")
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
